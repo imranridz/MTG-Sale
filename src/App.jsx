@@ -21,8 +21,20 @@ import {
   ArrowUpDown,
   Lock,
   Unlock,
-  KeyRound
+  KeyRound,
+  CloudLightning,
+  Cloud
 } from 'lucide-react';
+
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, doc, setDoc, onSnapshot } from 'firebase/firestore';
+
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 
 // Default CSV content parsed from user's upload to make it work immediately
 const DEFAULT_CSV_DATA = `Name,Set code,Set name,Collector number,Foil,Rarity,Quantity,ManaBox ID,Scryfall ID,Purchase price,Misprint,Altered,Condition,Language,Purchase price currency,Added
@@ -34,25 +46,19 @@ Fracture,STA,Strixhaven Mystical Archive,65,normal,rare,2,112588,34005b2e-6270-4
 Molten-Core Maestro,BIG,The Big Score,125,normal,rare,1,111697,326dfe32-3674-4a11-acd8-5ba62371235a,2.99,false,false,near_mint,en,USD,2026-05-01T12:42:00.924Z`;
 
 export default function App() {
-  // State management
-  const [cards, setCards] = useState(() => {
-    const saved = localStorage.getItem('mtg_store_inventory');
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [user, setUser] = useState(null);
+  const [cards, setCards] = useState([]);
   const [scryfallData, setScryfallData] = useState({});
   const [loading, setLoading] = useState(false);
   const [cart, setCart] = useState({});
   const [copiedScript, setCopiedScript] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(true);
   
   // Storage state config
-  const [sheetUrl, setSheetUrl] = useState(() => {
-    return localStorage.getItem('mtg_store_sheet_url') || '';
-  });
+  const [sheetUrl, setSheetUrl] = useState('');
   
   // Security passcodes
-  const [storedPasscode, setStoredPasscode] = useState(() => {
-    return localStorage.getItem('mtg_store_owner_passcode') || '';
-  });
+  const [storedPasscode, setStoredPasscode] = useState('');
   const [passcodeAttempt, setPasscodeAttempt] = useState('');
   const [newPasscode, setNewPasscode] = useState('');
   const [isPasscodePromptOpen, setIsPasscodePromptOpen] = useState(false);
@@ -72,12 +78,64 @@ export default function App() {
   const [submittingOrder, setSubmittingOrder] = useState(false);
   const [alertMsg, setAlertMsg] = useState(null);
 
-  // Robust Alphanumeric normalizer for headers
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (err) {
+        console.error("Authentication failed:", err);
+      }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, setUser);
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    setIsSyncing(true);
+
+    const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'globalStore', 'state');
+    
+    const unsubscribe = onSnapshot(docRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        if (data.cards) {
+          setCards(data.cards);
+          // Fetch Scryfall details if metadata not loaded
+          fetchScryfallDetails(data.cards);
+        }
+        if (data.sheetUrl !== undefined) setSheetUrl(data.sheetUrl);
+        if (data.passcode !== undefined) setStoredPasscode(data.passcode);
+      } else {
+        // First initialization for this workspace
+        const defaultParsed = parseCSV(DEFAULT_CSV_DATA);
+        setDoc(docRef, {
+          cards: defaultParsed,
+          sheetUrl: '',
+          passcode: ''
+        }).then(() => {
+          setCards(defaultParsed);
+          fetchScryfallDetails(defaultParsed);
+        });
+      }
+      setIsSyncing(false);
+    }, (error) => {
+      console.error("Firestore synchronisation error:", error);
+      setIsSyncing(false);
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
   const normalizeHeaderKey = (key) => {
     return key.toLowerCase().trim().replace(/[\s_-]+/g, '');
   };
 
-  // Centralized helper for unique ID generation
   const getCardUniqueId = (card) => {
     if (card.scryfallid && card.scryfallid.trim() !== '') return card.scryfallid.trim().toLowerCase();
     const name = (card.name || '').trim().toLowerCase();
@@ -86,13 +144,11 @@ export default function App() {
     return `${name}-${set}-${num}`;
   };
 
-  // Helper to determine if a card is foil
   const isCardFoil = (card) => {
     const foilVal = card.foil?.toLowerCase() || '';
     return foilVal === 'foil' || foilVal === 'etched' || foilVal === 'yes' || foilVal === 'true' || foilVal === '1';
   };
 
-  // Load and parse CSV helper
   const parseCSV = (text) => {
     try {
       const lines = text.split(/\r?\n/);
@@ -104,7 +160,6 @@ export default function App() {
       for (let i = 1; i < lines.length; i++) {
         if (!lines[i].trim()) continue;
         
-        // Handle comma splitting with simple quotes parsing
         let row = [];
         let inQuotes = false;
         let currentField = '';
@@ -124,8 +179,6 @@ export default function App() {
         if (row.length < headers.length) continue;
 
         const card = {};
-        
-        // Assign a strictly unique rowId for stable React mapping
         card.rowId = `card-row-${i}`;
 
         headers.forEach((header, index) => {
@@ -133,7 +186,7 @@ export default function App() {
           const normHeader = normalizeHeaderKey(header);
           
           if (normHeader === 'quantity') {
-            card.quantity = parseInt(val, 10) || 0; // Force integer
+            card.quantity = parseInt(val, 10) || 0;
           } else if (normHeader === 'purchaseprice') {
             card.purchaseprice = parseFloat(val) || 0;
           } else if (normHeader === 'set' || normHeader === 'setcode') {
@@ -151,7 +204,6 @@ export default function App() {
           } else if (normHeader === 'setname') {
             card.setname = val;
           } else {
-            // Keep any other headers mapped as normalized keys
             card[normHeader] = val;
           }
         });
@@ -165,7 +217,6 @@ export default function App() {
     }
   };
 
-  // Set up toast notice
   const showToast = (message, type = 'info') => {
     setAlertMsg({ message, type });
     setTimeout(() => {
@@ -173,41 +224,27 @@ export default function App() {
     }, 4500);
   };
 
-  // Initial load
-  useEffect(() => {
-    if (cards.length === 0) {
-      const defaultParsed = parseCSV(DEFAULT_CSV_DATA);
-      setCards(defaultParsed);
-      fetchScryfallDetails(defaultParsed);
-    } else {
-      fetchScryfallDetails(cards);
-    }
-  }, []);
-
-  // Sync inventory with local storage
-  useEffect(() => {
-    localStorage.setItem('mtg_store_inventory', JSON.stringify(cards));
-  }, [cards]);
-
-  // Save Sheet URL setting
-  useEffect(() => {
-    localStorage.setItem('mtg_store_sheet_url', sheetUrl);
-  }, [sheetUrl]);
-
-  // Handle uploaded custom CSV
-  const handleFileUpload = (e) => {
+  const handleFileUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       const text = event.target.result;
       const parsed = parseCSV(text);
       if (parsed.length > 0) {
-        setCards(parsed);
-        setCart({}); // Reset cart on inventory change
-        fetchScryfallDetails(parsed);
-        showToast(`Successfully uploaded ${parsed.length} cards to inventory!`, 'success');
+        setIsSyncing(true);
+        try {
+          const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'globalStore', 'state');
+          await setDoc(docRef, { cards: parsed }, { merge: true });
+          setCart({}); // Reset local cart
+          showToast(`Successfully published ${parsed.length} cards globally!`, 'success');
+        } catch (error) {
+          console.error(error);
+          showToast('Failed to sync inventory with global database.', 'error');
+        } finally {
+          setIsSyncing(false);
+        }
       } else {
         showToast('No valid MTG card rows found in the CSV file.', 'error');
       }
@@ -215,15 +252,21 @@ export default function App() {
     reader.readAsText(file);
   };
 
-  // Fetch missing details from Scryfall
   const fetchScryfallDetails = async (cardList) => {
     if (!cardList || cardList.length === 0) return;
+
+    // Check if we already have most data mapped to avoid repetitive network requests
+    const needed = cardList.filter(card => {
+      const uid = getCardUniqueId(card);
+      return !scryfallData[uid] && !scryfallData[card.scryfallid];
+    });
+
+    if (needed.length === 0) return;
 
     setLoading(true);
     const updatedDetails = { ...scryfallData };
     
-    // Construct lookup identifiers. We can use either scryfallid OR { name, set } fallback.
-    const identifiers = cardList.map(card => {
+    const identifiers = needed.map(card => {
       if (card.scryfallid && card.scryfallid.trim() !== '') {
         return { id: card.scryfallid };
       } else if (card.name && card.setcode) {
@@ -237,7 +280,6 @@ export default function App() {
       return;
     }
 
-    // Scryfall allows maximum of 75 identifiers per request
     const batchSize = 75;
     const batches = [];
     for (let i = 0; i < identifiers.length; i += batchSize) {
@@ -277,11 +319,9 @@ export default function App() {
                   usd_price: scryCard.prices?.usd || scryCard.prices?.usd_foil || '—'
                 };
 
-                // Store under Scryfall ID
                 if (scryCard.id) {
                   updatedDetails[scryCard.id] = cardDetail;
                 }
-                // Also store under lowercase name-set code combination as fallback
                 const fallbackKey = `${scryCard.name?.toLowerCase()}-${scryCard.set?.toLowerCase()}`;
                 updatedDetails[fallbackKey] = cardDetail;
               }
@@ -293,13 +333,11 @@ export default function App() {
       setScryfallData(updatedDetails);
     } catch (err) {
       console.error('Error contacting Scryfall API:', err);
-      showToast('Some card images could not load from Scryfall.', 'warning');
     } finally {
       setLoading(false);
     }
   };
 
-  // Helper lookup function for scryfall details
   const getCardDetails = (card) => {
     if (card.scryfallid && scryfallData[card.scryfallid]) {
       return scryfallData[card.scryfallid];
@@ -308,14 +346,13 @@ export default function App() {
     return scryfallData[fallbackKey] || {};
   };
 
-  // Add to cart helper
   const addToCart = (card) => {
     const cardId = getCardUniqueId(card);
     const maxQty = parseInt(card.quantity) || 0;
     const currentQty = cart[cardId]?.quantity || 0;
 
     if (currentQty >= maxQty) {
-      showToast(`Cannot add more. Only ${maxQty} in stock.`, 'warning');
+      showToast(`Cannot add more. Only ${maxQty} remaining globally.`, 'warning');
       return;
     }
 
@@ -328,7 +365,6 @@ export default function App() {
     }));
   };
 
-  // Remove / Decrement from cart
   const removeFromCart = (cardId, fullyRemove = false) => {
     setCart(prev => {
       const next = { ...prev };
@@ -343,7 +379,6 @@ export default function App() {
     });
   };
 
-  // Calculate cart metrics
   const cartTotalItemsCount = useMemo(() => {
     return Object.values(cart).reduce((sum, item) => sum + item.quantity, 0);
   }, [cart]);
@@ -362,7 +397,7 @@ export default function App() {
     return rawTotal * getMultiplier(cartTotalItemsCount);
   }, [cart, cartTotalItemsCount]);
 
-  // Color options
+  // Color selection criteria
   const colorOptions = [
     { code: 'W', name: 'White', colorClass: 'bg-yellow-100 text-yellow-800 border-yellow-300' },
     { code: 'U', name: 'Blue', colorClass: 'bg-blue-100 text-blue-800 border-blue-300' },
@@ -373,56 +408,41 @@ export default function App() {
     { code: 'M', name: 'Multicolor', colorClass: 'bg-gradient-to-r from-orange-400 via-yellow-400 to-teal-400 text-slate-900 border-orange-300' }
   ];
 
-  // Rarity options
   const rarityOptions = ['common', 'uncommon', 'rare', 'mythic'];
 
-  // Handle color filters toggle
   const toggleColorFilter = (colorCode) => {
     setSelectedColors(prev => 
-      prev.includes(colorCode) 
-        ? prev.filter(c => c !== colorCode) 
-        : [...prev, colorCode]
+      prev.includes(colorCode) ? prev.filter(c => c !== colorCode) : [...prev, colorCode]
     );
   };
 
-  // Handle rarity filters toggle
   const toggleRarityFilter = (rarity) => {
     setSelectedRarities(prev => 
-      prev.includes(rarity) 
-        ? prev.filter(r => r !== rarity) 
-        : [...prev, rarity]
+      prev.includes(rarity) ? prev.filter(r => r !== rarity) : [...prev, rarity]
     );
   };
 
-  // Apply filters & Sorts
   const filteredAndSortedCards = useMemo(() => {
-    // 1. Filter original cards list
     const filtered = cards.filter(card => {
       const details = getCardDetails(card);
 
-      // Search Query
       const nameMatch = card.name?.toLowerCase().includes(searchQuery.toLowerCase()) || 
                         card.setname?.toLowerCase().includes(searchQuery.toLowerCase()) ||
                         card.setcode?.toLowerCase().includes(searchQuery.toLowerCase());
       if (!nameMatch) return false;
 
-      // Rarity Filter
       if (selectedRarities.length > 0) {
         const cardRarity = card.rarity?.toLowerCase() || '';
         const match = selectedRarities.some(r => cardRarity.includes(r));
         if (!match) return false;
       }
 
-      // Foil Filter
       if (showFoilOnly) {
         if (!isCardFoil(card)) return false;
       }
 
-      // Color Filter (Requires Scryfall colors array)
       if (selectedColors.length > 0) {
-        if (!details.colors) {
-          return false;
-        }
+        if (!details.colors) return false;
 
         const cardColors = details.colors || [];
         const hasColorlessSelected = selectedColors.includes('C');
@@ -431,12 +451,8 @@ export default function App() {
 
         let matches = false;
 
-        if (hasColorlessSelected && cardColors.length === 0) {
-          matches = true;
-        }
-        if (hasMulticolorSelected && cardColors.length > 1) {
-          matches = true;
-        }
+        if (hasColorlessSelected && cardColors.length === 0) matches = true;
+        if (hasMulticolorSelected && cardColors.length > 1) matches = true;
         if (specificColorFilters.length > 0 && cardColors.length > 0) {
           const hasAny = cardColors.some(col => specificColorFilters.includes(col));
           if (hasAny) matches = true;
@@ -448,7 +464,6 @@ export default function App() {
       return true;
     });
 
-    // 2. Sort filtered cards list
     return [...filtered].sort((a, b) => {
       if (sortBy === 'price-asc') {
         const priceA = parseFloat(a.purchaseprice) || 0;
@@ -470,33 +485,35 @@ export default function App() {
     });
   }, [cards, scryfallData, searchQuery, selectedRarities, selectedColors, showFoilOnly, sortBy]);
 
-  // Handle owner clicks Settings Gear
   const handleSettingsClick = () => {
     if (!storedPasscode) {
-      // First-time setup required
       setIsPasscodeSetupOpen(true);
     } else {
-      // Prompt verification passcode
       setIsPasscodePromptOpen(true);
     }
   };
 
-  // Create owner passcode
-  const handleCreatePasscode = (e) => {
+  const handleCreatePasscode = async (e) => {
     e.preventDefault();
     if (!newPasscode.trim()) {
       showToast('Please enter a valid passcode.', 'warning');
       return;
     }
-    localStorage.setItem('mtg_store_owner_passcode', newPasscode);
-    setStoredPasscode(newPasscode);
-    setIsPasscodeSetupOpen(false);
-    setIsSettingsOpen(true); // Open settings directly upon setup
-    setNewPasscode('');
-    showToast('Storeowner Passcode successfully created!', 'success');
+    setIsSyncing(true);
+    try {
+      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'globalStore', 'state');
+      await setDoc(docRef, { passcode: newPasscode }, { merge: true });
+      setIsPasscodeSetupOpen(false);
+      setIsSettingsOpen(true);
+      setNewPasscode('');
+      showToast('Global Admin Passcode successfully set!', 'success');
+    } catch (error) {
+      showToast('Could not save configuration settings globally.', 'error');
+    } finally {
+      setIsSyncing(false);
+    }
   };
 
-  // Verify owner passcode
   const handleVerifyPasscode = (e) => {
     e.preventDefault();
     if (passcodeAttempt === storedPasscode) {
@@ -510,36 +527,43 @@ export default function App() {
     }
   };
 
-  // Change existing passcode inside panel
-  const handleChangePasscodeInsideSettings = () => {
+  const handleChangePasscodeInsideSettings = async () => {
     const freshPass = prompt('Enter a new security passcode:');
     if (freshPass && freshPass.trim()) {
-      localStorage.setItem('mtg_store_owner_passcode', freshPass.trim());
-      setStoredPasscode(freshPass.trim());
-      showToast('Owner passcode changed successfully!', 'success');
+      setIsSyncing(true);
+      try {
+        const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'globalStore', 'state');
+        await setDoc(docRef, { passcode: freshPass.trim() }, { merge: true });
+        showToast('Global admin passcode updated!', 'success');
+      } catch (err) {
+        showToast('Failed to sync new settings.', 'error');
+      } finally {
+        setIsSyncing(false);
+      }
     }
   };
 
-  // Setup sample Google Sheet Web App endpoint code
+  const updateSheetUrlGlobal = async (url) => {
+    setSheetUrl(url);
+    try {
+      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'globalStore', 'state');
+      await setDoc(docRef, { sheetUrl: url }, { merge: true });
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   const googleAppsScriptCode = `function doPost(e) {
   try {
     var jsonString = e.postData.contents;
     var data = JSON.parse(jsonString);
-    
-    // Open target spreadsheet (Create a spreadsheet & paste its Active Sheet name below)
     var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
-    
-    // Add Headers if Sheet is completely empty
     if (sheet.getLastRow() === 0) {
       sheet.appendRow(["Timestamp", "Customer Name", "Phone Number", "Total Value", "Card Orders"]);
     }
-    
-    // Format ordered cards list as readable text line
     var ordersSummary = data.items.map(function(item) {
       return item.name + " (" + item.set + " #" + item.collectorNumber + ") [" + item.foil + "] x" + item.quantity;
     }).join(", ");
-    
-    // Append Order
     sheet.appendRow([
       new Date(),
       data.buyerName,
@@ -547,7 +571,6 @@ export default function App() {
       "$" + data.totalValue.toFixed(2),
       ordersSummary
     ]);
-    
     return ContentService.createTextOutput(JSON.stringify({ "status": "success", "message": "Order logged successfully!" }))
                          .setMimeType(ContentService.MimeType.JSON);
   } catch (error) {
@@ -563,7 +586,6 @@ export default function App() {
     showToast('Apps Script code copied to clipboard!', 'success');
   };
 
-  // Submit cart order
   const handleCheckout = async (e) => {
     e.preventDefault();
     if (!buyerName.trim() || !buyerPhone.trim()) {
@@ -576,11 +598,13 @@ export default function App() {
       return;
     }
 
-    // Mark as sold: Reduce inventory quantity using central ID helper
+    setIsSyncing(true);
+    setSubmittingOrder(true);
+
+    // Lock quantities globally
     const updatedCards = cards.map(card => {
       const cardId = getCardUniqueId(card);
       const cartItem = cart[cardId];
-      
       if (cartItem) {
         const currentQty = parseInt(card.quantity) || 0;
         const soldQty = parseInt(cartItem.quantity) || 0;
@@ -589,53 +613,42 @@ export default function App() {
       return card;
     });
 
-    console.log('Updating inventory state:', updatedCards);
-    setCards(updatedCards);
-    // Explicitly sync to storage immediately
-    localStorage.setItem('mtg_store_inventory', JSON.stringify(updatedCards));
-
-    const payload = {
-      buyerName,
-      buyerPhone,
-      totalValue: cartTotal,
-      items: Object.values(cart).map(item => ({
-        name: item.card.name,
-        set: item.card.setcode,
-        collectorNumber: item.card.collectornumber,
-        quantity: item.quantity
-      }))
-    };
-
-    setSubmittingOrder(true);
-
-    if (!sheetUrl) {
-      setTimeout(() => {
-        setSubmittingOrder(false);
-        setOrderSubmitted(true);
-        setCards(updatedCards);
-        setCart({});
-        showToast('Demo checkout successful! No Google Sheet Webhook URL was configured.', 'info');
-      }, 1500);
-      return;
-    }
-
     try {
-      await fetch(sheetUrl, {
-        method: 'POST',
-        mode: 'no-cors',
-        headers: { 'Content-Type': 'text/plain' },
-        body: JSON.stringify(payload)
-      });
+      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'globalStore', 'state');
+      await setDoc(docRef, { cards: updatedCards }, { merge: true });
 
-      setSubmittingOrder(false);
+      const payload = {
+        buyerName,
+        buyerPhone,
+        totalValue: cartTotal,
+        items: Object.values(cart).map(item => ({
+          name: item.card.name,
+          set: item.card.setcode,
+          collectorNumber: item.card.collectornumber,
+          quantity: item.quantity
+        }))
+      };
+
+      if (sheetUrl) {
+        await fetch(sheetUrl, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: { 'Content-Type': 'text/plain' },
+          body: JSON.stringify(payload)
+        });
+        showToast('Order submitted globally directly to your Google Sheet!', 'success');
+      } else {
+        showToast('Checkout simulated! Config a spreadsheet url to persist sales reports.', 'info');
+      }
+
       setOrderSubmitted(true);
-      setCards(updatedCards);
       setCart({});
-      showToast('Order submitted successfully!', 'success');
     } catch (error) {
       console.error(error);
+      showToast('Error syncing purchase ledger across servers.', 'error');
+    } finally {
       setSubmittingOrder(false);
-      showToast('Error communicating with Google Sheets.', 'error');
+      setIsSyncing(false);
     }
   };
 
@@ -664,10 +677,21 @@ export default function App() {
               <Sparkles className="w-6 h-6 animate-pulse" />
             </div>
             <div>
-              <h1 className="text-xl font-bold tracking-tight bg-gradient-to-r from-white via-slate-200 to-rose-400 bg-clip-text text-transparent">
-                Quitting Sale
-              </h1>
-              <p className="text-xs text-slate-400">Everything for sale</p>
+              <div className="flex items-center gap-2">
+                <h1 className="text-xl font-bold tracking-tight bg-gradient-to-r from-white via-slate-200 to-rose-400 bg-clip-text text-transparent">
+                  Quitting Sale
+                </h1>
+                {isSyncing ? (
+                  <span className="flex items-center gap-1 px-2 py-0.5 bg-slate-800 text-[10px] rounded-full text-amber-400">
+                    <CloudLightning className="w-3 h-3 animate-spin" /> Syncing
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-1 px-2 py-0.5 bg-emerald-950/60 border border-emerald-800 text-[10px] rounded-full text-emerald-400">
+                    <Cloud className="w-3 h-3" /> Live
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-slate-400">Shared Global Database</p>
             </div>
           </div>
 
@@ -710,12 +734,12 @@ export default function App() {
                 Click on any card to add to cart. Submit with your name and telephone number, and I will contact you for confirmation.
               </p>
               <div className="space-y-1 mb-6 border-l-2 border-rose-500 pl-4 py-1">
-                <p className="text-slate-300 text-sm font-semibold">Singles at CKD x 2.5</p>
-                <p className="text-slate-300 text-sm font-semibold">5 or more at CKD x 2.3</p>
-                <p className="text-slate-300 text-sm font-semibold">10 or more at CKD x 2.0</p>
+                <p className="text-slate-300 text-sm font-semibold">1-4 cards: CKD x 2.5 RM</p>
+                <p className="text-slate-300 text-sm font-semibold">5-9 cards: CKD x 2.3 RM</p>
+                <p className="text-slate-300 text-sm font-semibold">10 or more cards: CKD x 2.0 RM</p>
               </div>
               <div className="text-xs text-slate-400">
-                Currently showcasing <strong className="text-slate-200">{cards.length}</strong> unique listings
+                Currently showcasing <strong className="text-slate-200">{cards.length}</strong> unique listings globally
               </div>
             </div>
             
@@ -732,11 +756,11 @@ export default function App() {
                 </li>
                 <li className="flex gap-2">
                   <span className="flex-none font-bold text-rose-400 bg-rose-950/40 w-5 h-5 rounded-full flex items-center justify-center text-xs">2</span>
-                  <span>Click the cards you desire to add them to your cart (limited by stock).</span>
+                  <span>Click the cards you desire to add them to your cart.</span>
                 </li>
                 <li className="flex gap-2">
                   <span className="flex-none font-bold text-rose-400 bg-rose-950/40 w-5 h-5 rounded-full flex items-center justify-center text-xs">3</span>
-                  <span>Open your cart, type in your delivery info, and checkout.</span>
+                  <span>Open your cart, type in your delivery info, and checkout. Card stock decreases globally for everyone.</span>
                 </li>
               </ol>
             </div>
@@ -939,12 +963,10 @@ export default function App() {
                           : 'border-slate-800/80 hover:border-slate-700 hover:shadow-xl hover:shadow-slate-950/50 hover:-translate-y-1'
                       }`}
                     >
-                      {/* Holographic glowing borders & cards for foil */}
                       {isFoil && (
                         <div className="absolute inset-0 pointer-events-none rounded-2xl opacity-15 bg-gradient-to-tr from-pink-500 via-purple-500 to-teal-500 z-10 animate-pulse"></div>
                       )}
 
-                      {/* Header overlay badge */}
                       <div className="absolute top-2 left-2 z-20 flex gap-1">
                         {isFoil && (
                           <span className="inline-flex items-center gap-0.5 px-2 py-0.5 bg-gradient-to-r from-pink-500 to-indigo-600 text-white font-bold text-[9px] uppercase tracking-wider rounded-md shadow-sm">
@@ -961,7 +983,6 @@ export default function App() {
                         </span>
                       </div>
 
-                      {/* Quantity Tag */}
                       <div className="absolute top-2 right-2 z-20">
                         {availableQty > 0 ? (
                           <span className="px-2 py-0.5 bg-slate-950/80 backdrop-blur-md text-slate-200 text-xs font-semibold rounded-md border border-slate-700">
@@ -974,7 +995,6 @@ export default function App() {
                         )}
                       </div>
 
-                      {/* Card Image frame */}
                       <div className={`relative aspect-[3/4] bg-slate-950 overflow-hidden flex items-center justify-center ${availableQty === 0 ? 'grayscale opacity-75' : ''}`}>
                         {details.image ? (
                           <img
@@ -992,7 +1012,6 @@ export default function App() {
                           </div>
                         )}
 
-                        {/* Hover Overlay details */}
                         <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/40 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex flex-col justify-end p-4">
                           <span className="text-xs font-medium text-slate-300 truncate">
                             {card.setname || 'Set'}
@@ -1002,7 +1021,6 @@ export default function App() {
                           </span>
                         </div>
 
-                          {/* Item Cart Counter Banner */}
                         {inCartCount > 0 && (
                           <div className="absolute inset-0 bg-rose-600/20 backdrop-blur-xs flex items-center justify-center z-15">
                             <div className="bg-rose-600 text-white font-extrabold text-sm px-4 py-2 rounded-xl shadow-lg border border-rose-400">
@@ -1012,7 +1030,6 @@ export default function App() {
                         )}
                       </div>
 
-                      {/* Info & Price Footer block */}
                       <div className="p-4 bg-slate-900 border-t border-slate-800 flex-grow flex flex-col justify-between">
                         <h4 className={`font-bold text-sm group-hover:text-rose-400 transition truncate ${availableQty === 0 ? 'text-slate-500' : 'text-white'}`} title={card.name}>
                           {card.name}
@@ -1035,7 +1052,7 @@ export default function App() {
                             </button>
                           ) : (
                             <button disabled className="px-3 py-1.5 bg-slate-950 text-slate-600 rounded-lg text-xs font-bold cursor-not-allowed border border-slate-800">
-                              Out of Stock
+                              SOLD OUT
                             </button>
                           )}
                         </div>
@@ -1055,7 +1072,6 @@ export default function App() {
       {/* Cart Modal / Drawer */}
       {isCartOpen && (
         <div className="fixed inset-0 z-50 overflow-hidden">
-          {/* Backdrop */}
           <div 
             onClick={() => setIsCartOpen(false)} 
             className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm transition-opacity"
@@ -1065,7 +1081,6 @@ export default function App() {
             <div className="w-screen max-w-md transform transition-all">
               <div className="h-full flex flex-col bg-slate-900 shadow-2xl border-l border-slate-800">
                 
-                {/* Drawer Header */}
                 <div className="px-6 py-5 bg-slate-950 border-b border-slate-800 flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <ShoppingBag className="w-5 h-5 text-rose-500" />
@@ -1079,7 +1094,6 @@ export default function App() {
                   </button>
                 </div>
 
-                {/* Content */}
                 <div className="flex-1 overflow-y-auto p-6 space-y-6">
                   {orderSubmitted ? (
                     <div className="text-center py-12">
@@ -1088,7 +1102,7 @@ export default function App() {
                       </div>
                       <h4 className="text-xl font-bold text-white mb-2">Order Submitted!</h4>
                       <p className="text-slate-400 text-sm max-w-xs mx-auto mb-6">
-                        Thank you! Your purchase selections and details were saved directly into the ledger. The seller will be in touch with you shortly.
+                        Thank you! Your purchase selections and details were saved directly into the ledger. The stock has been synced globally.
                       </p>
                       <button
                         onClick={() => setOrderSubmitted(false)}
@@ -1149,7 +1163,7 @@ export default function App() {
                                   <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-lg border border-slate-800">
                                     <button 
                                       type="button"
-                                      onClick={() => removeFromCart(scryId, false)}
+                                      onClick={() => removeFromCart(cardId, false)}
                                       className="p-1 hover:bg-slate-800 text-slate-400 hover:text-white rounded transition"
                                     >
                                       <Minus className="w-3 h-3" />
@@ -1168,7 +1182,7 @@ export default function App() {
 
                               <button 
                                 type="button"
-                                onClick={() => removeFromCart(scryId, true)}
+                                onClick={() => removeFromCart(cardId, true)}
                                 className="text-slate-600 hover:text-rose-500 p-1 self-start transition ml-2"
                               >
                                 <Trash2 className="w-4 h-4" />
@@ -1209,16 +1223,16 @@ export default function App() {
                         {/* Order Summary Calculations */}
                         <div className="bg-slate-950 p-4 rounded-xl border border-slate-800/80 space-y-2 mt-2">
                           <div className="flex justify-between text-xs text-slate-400">
-                            <span>Subtotal</span>
-                            <span>{Object.values(cart).reduce((sum, item) => sum + (parseFloat(item.card.purchaseprice || 0) * item.quantity), 0).toFixed(2)} $</span>
+                            <span>Base Subtotal</span>
+                            <span>{Object.values(cart).reduce((sum, item) => sum + (parseFloat(item.card.purchaseprice || 0) * item.quantity), 0).toFixed(2)} USD</span>
                           </div>
                           <div className="flex justify-between text-xs text-slate-400">
-                            <span>Multiplier ({cartTotalItemsCount} items)</span>
-                            <span>x{getMultiplier(cartTotalItemsCount).toFixed(1)}</span>
+                            <span>Volume Multiplier ({cartTotalItemsCount} cards)</span>
+                            <span className="text-amber-400 font-bold">x{getMultiplier(cartTotalItemsCount).toFixed(1)}</span>
                           </div>
                           <div className="flex justify-between text-sm font-bold text-slate-200 border-t border-slate-900 pt-2">
                             <span>Final Total</span>
-                            <span className="text-rose-400 text-lg font-extrabold">{cartTotal.toFixed(2)} RM</span>
+                            <span className="text-rose-400 text-lg font-extrabold">RM {cartTotal.toFixed(2)}</span>
                           </div>
                         </div>
 
@@ -1226,7 +1240,7 @@ export default function App() {
                           <div className="p-3 bg-amber-950/40 border border-amber-900/60 rounded-xl text-xs text-amber-300 flex gap-2">
                             <Info className="w-4 h-4 text-amber-400 flex-none mt-0.5" />
                             <span>
-                              Storeowner: No Google Sheets URL is set. Placing order will simulate a checkout. Set it up using the Settings gear.
+                              Storeowner: No Google Sheets URL configured globally. Checkout will decrease stock live, but won't send webhook reports.
                             </span>
                           </div>
                         )}
@@ -1239,7 +1253,7 @@ export default function App() {
                           {submittingOrder ? (
                             <>
                               <Loader className="w-4 h-4 animate-spin" />
-                              <span>Sending Purchase...</span>
+                              <span>Syncing Purchase...</span>
                             </>
                           ) : (
                             <>
@@ -1269,7 +1283,7 @@ export default function App() {
             </div>
             <h3 className="text-lg font-extrabold text-white mb-2">Create Admin Passcode</h3>
             <p className="text-xs text-slate-400 mb-6 leading-relaxed">
-              Welcome! Since this is your first time accessing the Admin menu, please configure a custom secret passcode. Only you will be able to access settings and inventory uploads from this browser.
+              Welcome! Please configure a custom security passcode for your store. This passcode is saved in the global live database, allowing you to access configurations from any browser or device.
             </p>
             <form onSubmit={handleCreatePasscode} className="space-y-4">
               <input
@@ -1310,7 +1324,7 @@ export default function App() {
             </div>
             <h3 className="text-lg font-extrabold text-white mb-2">Storeowner Verification</h3>
             <p className="text-xs text-slate-400 mb-6">
-              Enter your passcode to open settings and upload card databases.
+              Enter your passcode to open settings and upload card databases globally.
             </p>
             <form onSubmit={handleVerifyPasscode} className="space-y-4">
               <input
@@ -1368,7 +1382,7 @@ export default function App() {
                 </div>
                 <div>
                   <h3 className="font-extrabold text-xl text-white">Storeowner Settings</h3>
-                  <p className="text-xs text-slate-400">Configure your target spreadsheet to save buyer details</p>
+                  <p className="text-xs text-slate-400">Configure global card spreadsheet deployment and updates</p>
                 </div>
               </div>
               <button
@@ -1381,20 +1395,20 @@ export default function App() {
             </div>
 
             <div className="space-y-6">
-              {/* CSV Upload Relocated Here */}
+              {/* CSV Upload */}
               <div className="bg-slate-950 p-5 rounded-2xl border border-slate-800">
                 <h4 className="text-sm font-bold text-slate-200 mb-1 flex items-center gap-2">
                   <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
-                  Inventory Database
+                  Global Inventory Database
                 </h4>
                 <p className="text-xs text-slate-400 mb-4 leading-relaxed">
-                  Upload a standard ManaBox, Scryfall, or custom formatted MTG card lists in `.csv` format to update stock details, quantities, and pricing.
+                  Uploading a CSV file here publishes the list globally. Every visitor across any device will instantly see these exact listings, prices, and quantities.
                 </p>
                 
                 <div className="flex items-center gap-3">
                   <label className="flex items-center gap-2 px-5 py-3 bg-slate-900 hover:bg-slate-850 text-slate-200 text-xs font-semibold rounded-xl cursor-pointer transition border border-slate-800/80">
                     <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
-                    <span>Upload New CSV File</span>
+                    <span>Upload &amp; Publish CSV</span>
                     <input
                       type="file"
                       accept=".csv"
@@ -1403,7 +1417,7 @@ export default function App() {
                     />
                   </label>
                   <span className="text-xs text-slate-500">
-                    Currently tracking <strong className="text-slate-300">{cards.length}</strong> card items.
+                    Currently hosting <strong className="text-slate-300">{cards.length}</strong> card items globally.
                   </span>
                 </div>
               </div>
@@ -1412,24 +1426,24 @@ export default function App() {
               <div className="bg-slate-950 p-5 rounded-2xl border border-slate-800">
                 <h4 className="text-sm font-bold text-slate-200 mb-2">Google Apps Script Web App URL</h4>
                 <p className="text-xs text-slate-400 mb-4 leading-relaxed">
-                  Provide your published deployment web app URL from Google Sheet Apps Script below. The system will dispatch checkout orders here instantly.
+                  Provide your published deployment web app URL from Google Sheet Apps Script below. Shared globally so anyone checked out will route straight to your sheet.
                 </p>
 
                 <input
                   type="url"
                   placeholder="https://script.google.com/macros/s/AKfycb.../exec"
                   value={sheetUrl}
-                  onChange={(e) => setSheetUrl(e.target.value)}
+                  onChange={(e) => updateSheetUrlGlobal(e.target.value)}
                   className="w-full bg-slate-900 border border-slate-700/80 focus:border-purple-500 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:ring-1 focus:ring-purple-500 transition"
                 />
                 
                 {sheetUrl ? (
                   <span className="inline-flex items-center gap-1.5 mt-3 text-xs text-emerald-400 font-semibold">
-                    <CheckCircle className="w-3.5 h-3.5" /> Webhook is currently active
+                    <CheckCircle className="w-3.5 h-3.5" /> Webhook is globally configured
                   </span>
                 ) : (
                   <span className="inline-flex items-center gap-1.5 mt-3 text-xs text-amber-400 font-semibold">
-                    <HelpCircle className="w-3.5 h-3.5" /> Waiting for URL configuration
+                    <HelpCircle className="w-3.5 h-3.5" /> No sheet webhook configured
                   </span>
                 )}
               </div>
@@ -1462,7 +1476,7 @@ export default function App() {
                     <span className="font-extrabold text-purple-400 bg-purple-950/40 w-5 h-5 rounded-full flex items-center justify-center text-[10px]">3</span>
                     <div>
                       <strong className="text-slate-200 block mb-0.5">Deploy as Web App</strong>
-                      Click <strong className="text-slate-300">Deploy &gt; New Deployment</strong>. Choose <strong className="text-slate-300">Web App</strong> as type. Change <strong className="text-slate-300">Who has access</strong> to <strong className="text-slate-300">Anyone</strong> (this is required for your client store to submit), authorize, and paste your generated URL above!
+                      Click <strong className="text-slate-300">Deploy &gt; New Deployment</strong>. Choose <strong className="text-slate-300">Web App</strong> as type. Change <strong className="text-slate-300">Who has access</strong> to <strong className="text-slate-300">Anyone</strong>, authorize, and paste your generated URL above!
                     </div>
                   </div>
                 </div>
@@ -1497,7 +1511,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Close settings */}
               <button
                 type="button"
                 onClick={() => setIsSettingsOpen(false)}
