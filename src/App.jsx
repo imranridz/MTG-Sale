@@ -27,9 +27,10 @@ import {
   RefreshCw
 } from 'lucide-react';
 
+
 // Default global credentials. Fill these in to connect instantly on Vercel without manual setup!
-const GLOBAL_DEFAULT_SHEET_URL = 'https://script.google.com/macros/s/AKfycbwt2R0y8bw_lXajDaiOukD2exXYYnGCMb1vRyE4XbncUG2w9JQ7DBXkOLG5YR84BI4/exec'; 
-const GLOBAL_DEFAULT_PASSCODE = 'bobseth';
+const GLOBAL_DEFAULT_SHEET_URL = 'https://script.google.com/macros/s/AKfycbxCBgGjUNtHrkGXr8fXGsIbhdx2nrYKacrMjrc6fd3Z19iZMWH_BE3RWfnbAw3P_I4/exec'; 
+const GLOBAL_DEFAULT_PASSCODE = 'bobseth123';
 
 // Backup offline / demo inventory loaded when Google Sheets isn't linked yet
 const DEFAULT_CSV_DATA = `Name,Set code,Set name,Collector number,Foil,Rarity,Quantity,ManaBox ID,Scryfall ID,Purchase price,Misprint,Altered,Condition,Language,Purchase price currency,Added
@@ -67,6 +68,7 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedRarities, setSelectedRarities] = useState([]);
   const [selectedColors, setSelectedColors] = useState([]);
+  const [selectedTypes, setSelectedTypes] = useState([]);
   const [showFoilOnly, setShowFoilOnly] = useState(false);
   const [sortBy, setSortBy] = useState('price-desc');
   const [isCartOpen, setIsCartOpen] = useState(false);
@@ -82,6 +84,7 @@ export default function App() {
 
   // Ref locks to avoid calling concurrent duplicate Scryfall batch pulls
   const activeBackgroundFetch = useRef(null);
+
 
   const normalizeHeaderKey = (key) => {
     return key.toString().toLowerCase().trim().replace(/[\s_-]+/g, '');
@@ -195,6 +198,7 @@ export default function App() {
     }, 4500);
   };
 
+
   const syncDatabaseWithBackend = async () => {
     if (!sheetUrl) {
       setIsGlobalMode(false);
@@ -239,6 +243,7 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('mtg_store_sheet_url', sheetUrl);
   }, [sheetUrl]);
+
 
   const fetchAllScryfallDetails = async (allCards) => {
     if (!allCards || allCards.length === 0) return;
@@ -350,6 +355,7 @@ export default function App() {
     return scryfallData[fallbackKey] || {};
   };
 
+
   const addToCart = (card) => {
     const cardId = getCardUniqueId(card);
     const maxQty = parseInt(card.quantity) || 0;
@@ -421,6 +427,7 @@ export default function App() {
   ];
 
   const rarityOptions = ['common', 'uncommon', 'rare', 'mythic'];
+  const typeOptions = ['creature', 'enchantment', 'artifact', 'sorcery', 'instant', 'planeswalker', 'land', 'battle'];
 
   const toggleColorFilter = (colorCode) => {
     setSelectedColors(prev => 
@@ -433,6 +440,13 @@ export default function App() {
       prev.includes(rarity) ? prev.filter(r => r !== rarity) : [...prev, rarity]
     );
   };
+
+  const toggleTypeFilter = (type) => {
+    setSelectedTypes(prev => 
+      prev.includes(type) ? prev.filter(t => t !== type) : [...prev, type]
+    );
+  };
+
 
   const filteredAndSortedCards = useMemo(() => {
     const filtered = cards.filter(card => {
@@ -473,6 +487,12 @@ export default function App() {
         if (!matches) return false;
       }
 
+      if (selectedTypes.length > 0) {
+        const typeLine = (details.type_line || '').toLowerCase();
+        const matchesType = selectedTypes.some(type => typeLine.includes(type));
+        if (!matchesType) return false;
+      }
+
       return true;
     });
 
@@ -495,7 +515,7 @@ export default function App() {
       }
       return 0;
     });
-  }, [cards, scryfallData, searchQuery, selectedRarities, selectedColors, showFoilOnly, sortBy]);
+  }, [cards, scryfallData, searchQuery, selectedRarities, selectedColors, selectedTypes, showFoilOnly, sortBy]);
 
   const handleSettingsClick = () => {
     if (!storedPasscode) {
@@ -540,6 +560,7 @@ export default function App() {
       showToast('Owner passcode changed successfully!', 'success');
     }
   };
+
 
   const googleAppsScriptCode = `function doGet(e) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -812,7 +833,7 @@ function doPost(e) {
             <div>
               <div className="flex items-center gap-2">
                 <h1 className="text-xl font-bold tracking-tight bg-gradient-to-r from-white via-slate-200 to-rose-400 bg-clip-text text-transparent">
-                  Imran Jual Kad Magic
+                  Imran Nak Jual Kad MTG
                 </h1>
                 {isGlobalMode ? (
                   <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[9px] font-extrabold bg-emerald-950/80 text-emerald-400 border border-emerald-800 animate-pulse">
@@ -824,7 +845,7 @@ function doPost(e) {
                   </span>
                 )}
               </div>
-              <p className="text-xs text-slate-400">Selling things off to buy Steam Deck</p>
+              <p className="text-xs text-slate-400">Selling cards to buy Steam Deck</p>
             </div>
           </div>
 
@@ -862,6 +883,8 @@ function doPost(e) {
         </div>
       </header>
 
+      { }
+
       {/* Hero Banner Section */}
       <section className="relative overflow-hidden bg-slate-900 py-12 border-b border-slate-800">
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(244,63,94,0.1),transparent)]"></div>
@@ -875,7 +898,7 @@ function doPost(e) {
                 Browse My Live Card Inventory
               </h2>
               <p className="text-slate-300 text-sm leading-relaxed mb-4">
-                Select cards to add to your cart, submit checkout, and I will contact you for payment and dropoff confirmation.
+                Select cards to add to your cart, submit checkout, and I will contact you to confirm dropoff and payment.
               </p>
               <div className="space-y-1 mb-6 border-l-2 border-rose-500 pl-4 py-1">
                 <p className="text-slate-300 text-sm font-semibold">1-4 cards: Subtotal x 2.5 RM</p>
@@ -890,6 +913,8 @@ function doPost(e) {
         </div>
       </section>
 
+      { }
+
       {/* Main Grid & Filters Content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
         <div className="lg:flex lg:gap-8">
@@ -901,11 +926,12 @@ function doPost(e) {
                   <Filter className="w-4 h-4 text-rose-500" />
                   Filters
                 </span>
-                {(selectedColors.length > 0 || selectedRarities.length > 0 || showFoilOnly || searchQuery) && (
+                {(selectedColors.length > 0 || selectedRarities.length > 0 || selectedTypes.length > 0 || showFoilOnly || searchQuery) && (
                   <button
                     onClick={() => {
                       setSelectedColors([]);
                       setSelectedRarities([]);
+                      setSelectedTypes([]);
                       setShowFoilOnly(false);
                       setSearchQuery('');
                     }}
@@ -948,6 +974,29 @@ function doPost(e) {
                         title={opt.name}
                       >
                         {opt.code}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="mb-6">
+                <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2.5">Card Type</label>
+                <div className="grid grid-cols-2 gap-1.5">
+                  {typeOptions.map((type) => {
+                    const isSelected = selectedTypes.includes(type);
+                    return (
+                      <button
+                        key={type}
+                        type="button"
+                        onClick={() => toggleTypeFilter(type)}
+                        className={`px-2 py-1.5 rounded-xl border text-[10px] font-bold capitalize transition truncate ${
+                          isSelected
+                            ? 'bg-rose-950/40 text-rose-300 border-rose-500 ring-1 ring-rose-500'
+                            : 'bg-slate-950 text-slate-400 border-slate-800 hover:bg-slate-800/60 hover:text-slate-200'
+                        }`}
+                      >
+                        {type}
                       </button>
                     );
                   })}
@@ -1003,6 +1052,8 @@ function doPost(e) {
             </div>
           </aside>
 
+          { }
+
           {/* Card Tiles Section */}
           <div className="flex-1">
             
@@ -1051,6 +1102,7 @@ function doPost(e) {
                   onClick={() => {
                     setSelectedColors([]);
                     setSelectedRarities([]);
+                    setSelectedTypes([]);
                     setShowFoilOnly(false);
                     setSearchQuery('');
                   }}
@@ -1160,6 +1212,10 @@ function doPost(e) {
                             {card.name}
                           </h4>
                           
+                          <div className="mt-2 text-[11px] text-slate-400 italic line-clamp-1">
+                            {details.type_line || "Loading card type..."}
+                          </div>
+
                           <div className="mt-3 flex items-center justify-between">
                             <div>
                               <span className="text-[11px] text-slate-500 block uppercase font-bold tracking-wider">Store Price</span>
@@ -1212,6 +1268,8 @@ function doPost(e) {
 
         </div>
       </main>
+
+      { }
 
       {/* Cart Drawer */}
       {isCartOpen && (
@@ -1415,6 +1473,8 @@ function doPost(e) {
           </div>
         </div>
       )}
+
+      {}
 
       {/* Admin Passcode Setup Modal */}
       {isPasscodeSetupOpen && (
