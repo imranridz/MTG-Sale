@@ -26,6 +26,7 @@ import {
   WifiOff,
   RefreshCw
 } from 'lucide-react';
+import { Analytics } from '@vercel/analytics/react';
 
 
 // Default global credentials. Fill these in to connect instantly on Vercel without manual setup!
@@ -1745,6 +1746,7 @@ function doPost(e) {
           </p>
         </div>
       </footer>
+      <Analytics />
     </div>
   );
 }
