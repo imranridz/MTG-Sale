@@ -812,7 +812,7 @@ function doPost(e) {
             <div>
               <div className="flex items-center gap-2">
                 <h1 className="text-xl font-bold tracking-tight bg-gradient-to-r from-white via-slate-200 to-rose-400 bg-clip-text text-transparent">
-                  Planeswalker Bazaar
+                  Imran Jual Kad Magic
                 </h1>
                 {isGlobalMode ? (
                   <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[9px] font-extrabold bg-emerald-950/80 text-emerald-400 border border-emerald-800 animate-pulse">
@@ -824,7 +824,7 @@ function doPost(e) {
                   </span>
                 )}
               </div>
-              <p className="text-xs text-slate-400">Sheet-Driven Collaborative MTG Shop</p>
+              <p className="text-xs text-slate-400">Selling things off to buy Steam Deck</p>
             </div>
           </div>
 
@@ -869,13 +869,13 @@ function doPost(e) {
           <div className="grid md:grid-cols-2 gap-8 items-center">
             <div>
               <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-rose-950/50 text-rose-400 text-xs font-semibold rounded-full border border-rose-900/60 mb-4">
-                <Globe className="w-3.5 h-3.5" /> No file uploads required! Paste cards directly in Google Sheets.
+                <Globe className="w-3.5 h-3.5" /> Cards are tracked LIVE!
               </span>
               <h2 className="text-3xl md:text-4xl font-extrabold tracking-tight text-white mb-3">
                 Browse My Live Card Inventory
               </h2>
               <p className="text-slate-300 text-sm leading-relaxed mb-4">
-                This store is powered entirely by a Google Sheet database. Select cards to add to your cart, submit checkout, and the system will instantly update sheet inventory.
+                Select cards to add to your cart, submit checkout, and I will contact you for payment and dropoff confirmation.
               </p>
               <div className="space-y-1 mb-6 border-l-2 border-rose-500 pl-4 py-1">
                 <p className="text-slate-300 text-sm font-semibold">1-4 cards: Subtotal x 2.5 RM</p>
