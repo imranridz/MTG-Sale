@@ -27,8 +27,8 @@ import {
 } from 'lucide-react';
 
 // Hardcode your configurations here to sync instantly across all devices!
-const GLOBAL_DEFAULT_SHEET_URL = ''; 
-const GLOBAL_DEFAULT_PASSCODE = '1234';
+const GLOBAL_DEFAULT_SHEET_URL = 'https://script.google.com/macros/s/AKfycbwt2R0y8bw_lXajDaiOukD2exXYYnGCMb1vRyE4XbncUG2w9JQ7DBXkOLG5YR84BI4/exec'; 
+const GLOBAL_DEFAULT_PASSCODE = 'bobseth123';
 
 const DEFAULT_CSV_DATA = `Name,Set code,Set name,Collector number,Foil,Rarity,Quantity,ManaBox ID,Scryfall ID,Purchase price,Misprint,Altered,Condition,Language,Purchase price currency,Added
 Darkslick Shores,ONE,Phyrexia: All Will Be One,250,normal,rare,2,78812,bcbda15b-e49a-4445-a0e1-f221aa82c1e8,2.99,false,false,near_mint,en,USD,2025-10-05T14:38:01.559Z
