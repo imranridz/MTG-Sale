@@ -26,6 +26,7 @@ import {
   WifiOff
 } from 'lucide-react';
 
+// Hardcode your configurations here to sync instantly across all devices!
 const GLOBAL_DEFAULT_SHEET_URL = ''; 
 const GLOBAL_DEFAULT_PASSCODE = '1234';
 
@@ -76,8 +77,8 @@ export default function App() {
   // Lazy loading pagination to prevent DOM lag with 2400+ cards
   const [visibleCount, setVisibleCount] = useState(80);
 
-  // Ref tracking IDs actively being requested to prevent duplicate parallel fetches
-  const fetchingIds = useRef(new Set());
+  // Ref tracking background fetching task to prevent multiple parallel fetches
+  const activeBackgroundFetch = useRef(null);
 
   const normalizeHeaderKey = (key) => {
     return key.toLowerCase().trim().replace(/[\s_-]+/g, '');
@@ -96,38 +97,57 @@ export default function App() {
     return foilVal === 'foil' || foilVal === 'etched' || foilVal === 'yes' || foilVal === 'true' || foilVal === '1';
   };
 
+  // Upgraded Character-by-Character state-machine CSV parser
   const parseCSV = (text) => {
     try {
-      const lines = text.split(/\r?\n/);
-      if (lines.length < 2) return [];
+      const rows = [];
+      let currentRow = [];
+      let currentField = '';
+      let inQuotes = false;
       
-      const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, ''));
+      for (let i = 0; i < text.length; i++) {
+        const char = text[i];
+        const nextChar = text[i+1];
+        
+        if (char === '"') {
+          if (inQuotes && nextChar === '"') {
+            currentField += '"';
+            i++; // skip next quote
+          } else {
+            inQuotes = !inQuotes;
+          }
+        } else if (char === ',' && !inQuotes) {
+          currentRow.push(currentField.trim());
+          currentField = '';
+        } else if ((char === '\r' || char === '\n') && !inQuotes) {
+          if (char === '\r' && nextChar === '\n') {
+            i++; // skip LF
+          }
+          currentRow.push(currentField.trim());
+          rows.push(currentRow);
+          currentRow = [];
+          currentField = '';
+        } else {
+          currentField += char;
+        }
+      }
+      
+      if (currentField || currentRow.length > 0) {
+        currentRow.push(currentField.trim());
+        rows.push(currentRow);
+      }
+
+      if (rows.length < 2) return [];
+      
+      const headers = rows[0].map(h => h.trim().replace(/^"|"$/g, ''));
       const parsed = [];
 
-      for (let i = 1; i < lines.length; i++) {
-        const line = lines[i].trim();
-        if (!line) continue;
-        
-        let row = [];
-        let inQuotes = false;
-        let currentField = '';
-        
-        for (let char of line) {
-          if (char === '"') {
-            inQuotes = !inQuotes;
-          } else if (char === ',' && !inQuotes) {
-            row.push(currentField.trim());
-            currentField = '';
-          } else {
-            currentField += char;
-          }
-        }
-        row.push(currentField.trim());
-
+      for (let i = 1; i < rows.length; i++) {
+        const row = rows[i];
+        if (row.length === 0 || (row.length === 1 && row[0] === '')) continue;
         if (row.length < headers.length) continue;
 
-        const card = {};
-        card.rowId = `card-row-${i}`;
+        const card = { rowId: `card-row-${i}` };
 
         headers.forEach((header, index) => {
           let val = row[index]?.replace(/^"|"$/g, '').trim() || '';
@@ -160,6 +180,7 @@ export default function App() {
       }
       return parsed;
     } catch (e) {
+      console.error(e);
       showToast('Error parsing CSV. Please check formatting.', 'error');
       return [];
     }
@@ -240,7 +261,7 @@ export default function App() {
             showToast('Global Inventory overwrite signal dispatched to Google Sheet!', 'success');
             setTimeout(() => {
               syncDatabaseWithBackend();
-            }, 1800);
+            }, 2500);
           } catch (err) {
             showToast('Could not save online. Inventory updated locally.', 'warning');
             setCards(parsed);
@@ -258,13 +279,23 @@ export default function App() {
     reader.readAsText(file);
   };
 
-  const fetchScryfallDetails = async (cardList) => {
-    if (!cardList || cardList.length === 0) return;
+  // Incremental background synchronization across all 2,400+ entries
+  const fetchAllScryfallDetails = async (allCards) => {
+    if (!allCards || allCards.length === 0) return;
+    
+    if (activeBackgroundFetch.current) {
+      clearTimeout(activeBackgroundFetch.current);
+    }
 
-    setLoading(true);
-    const updatedDetails = {};
+    const cardsToFetch = allCards.filter(card => {
+      const cardId = getCardUniqueId(card);
+      const hasDetail = scryfallData[cardId] || (card.scryfallid && scryfallData[card.scryfallid]);
+      return !hasDetail;
+    });
 
-    const identifiers = cardList.map(card => {
+    if (cardsToFetch.length === 0) return;
+
+    const identifiers = cardsToFetch.map(card => {
       if (card.scryfallid && card.scryfallid.trim() !== '') {
         return { id: card.scryfallid };
       } else if (card.name && card.setcode) {
@@ -273,19 +304,22 @@ export default function App() {
       return null;
     }).filter(Boolean);
 
-    if (identifiers.length === 0) {
-      setLoading(false);
-      return;
-    }
-
     const batchSize = 75;
     const batches = [];
     for (let i = 0; i < identifiers.length; i += batchSize) {
       batches.push(identifiers.slice(i, i + batchSize));
     }
 
-    try {
-      for (const batch of batches) {
+    let currentBatchIndex = 0;
+
+    const fetchNextBatch = async () => {
+      if (currentBatchIndex >= batches.length) {
+        activeBackgroundFetch.current = null;
+        return;
+      }
+
+      const batch = batches[currentBatchIndex];
+      try {
         const response = await fetch('https://api.scryfall.com/cards/collection', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -294,6 +328,7 @@ export default function App() {
 
         if (response.ok) {
           const result = await response.json();
+          const newDetails = {};
           if (result.data) {
             result.data.forEach(scryCard => {
               if (scryCard) {
@@ -315,43 +350,36 @@ export default function App() {
                   usd_price: scryCard.prices?.usd || scryCard.prices?.usd_foil || '—'
                 };
 
-                if (scryCard.id) updatedDetails[scryCard.id] = cardDetail;
+                if (scryCard.id) newDetails[scryCard.id] = cardDetail;
                 const fallbackKey = `${scryCard.name?.toLowerCase()}-${scryCard.set?.toLowerCase()}`;
-                updatedDetails[fallbackKey] = cardDetail;
+                newDetails[fallbackKey] = cardDetail;
               }
             });
           }
+          setScryfallData(prev => ({ ...prev, ...newDetails }));
         }
-
-        // Fill in failed lookups with mock fallback data to prevent infinite retries
-        batch.forEach(idObj => {
-          const key = idObj.id || `${idObj.name?.toLowerCase()}-${idObj.set?.toLowerCase()}`;
-          if (!updatedDetails[key]) {
-            updatedDetails[key] = {
-              image: '',
-              colors: [],
-              failed: true
-            };
-          }
-        });
-
-        // Safe throttle gap requested by Scryfall's collection endpoint
-        await new Promise(resolve => setTimeout(resolve, 150));
+      } catch (err) {
+        console.warn('Scryfall background fetch batch failed:', err);
       }
 
-      setScryfallData(prev => ({ ...prev, ...updatedDetails }));
-    } catch (err) {
-      console.error('Error contacting Scryfall API:', err);
-      // Clean locks on network error so cards can retry loading on visibility changes
-      cardList.forEach(card => {
-        const cardId = getCardUniqueId(card);
-        fetchingIds.current.delete(cardId);
-        if (card.scryfallid) fetchingIds.current.delete(card.scryfallid);
-      });
-    } finally {
-      setLoading(false);
-    }
+      currentBatchIndex++;
+      // Safe compliance throttle requested by Scryfall API limits
+      activeBackgroundFetch.current = setTimeout(fetchNextBatch, 150);
+    };
+
+    fetchNextBatch();
   };
+
+  useEffect(() => {
+    if (cards.length > 0) {
+      fetchAllScryfallDetails(cards);
+    }
+    return () => {
+      if (activeBackgroundFetch.current) {
+        clearTimeout(activeBackgroundFetch.current);
+      }
+    };
+  }, [cards]);
 
   const getCardDetails = (card) => {
     if (card.scryfallid && scryfallData[card.scryfallid]) {
@@ -445,6 +473,7 @@ export default function App() {
     );
   };
 
+  // Upgraded dynamic filters matching globally across all 2400+ loaded entries
   const filteredAndSortedCards = useMemo(() => {
     const filtered = cards.filter(card => {
       const details = getCardDetails(card);
@@ -465,7 +494,7 @@ export default function App() {
       }
 
       if (selectedColors.length > 0) {
-        if (!details.colors) return false;
+        if (!details.colors) return false; // This filters correctly as data background streams in
 
         const cardColors = details.colors || [];
         const hasColorlessSelected = selectedColors.includes('C');
@@ -507,29 +536,6 @@ export default function App() {
       return 0;
     });
   }, [cards, scryfallData, searchQuery, selectedRarities, selectedColors, showFoilOnly, sortBy]);
-
-  useEffect(() => {
-    // Determine which of the currently visible cards do not have metadata/image resolved yet
-    const visibleCardsSlice = filteredAndSortedCards.slice(0, visibleCount);
-    
-    const cardsToFetch = visibleCardsSlice.filter(card => {
-      const cardId = getCardUniqueId(card);
-      const hasDetail = scryfallData[cardId] || (card.scryfallid && scryfallData[card.scryfallid]);
-      const isRequesting = fetchingIds.current.has(cardId) || (card.scryfallid && fetchingIds.current.has(card.scryfallid));
-      return !hasDetail && !isRequesting;
-    });
-
-    if (cardsToFetch.length > 0) {
-      // Mark as fetching to avoid multiple duplicate requests
-      cardsToFetch.forEach(card => {
-        const cardId = getCardUniqueId(card);
-        fetchingIds.current.add(cardId);
-        if (card.scryfallid) fetchingIds.current.add(card.scryfallid);
-      });
-
-      fetchScryfallDetails(cardsToFetch);
-    }
-  }, [filteredAndSortedCards, visibleCount, scryfallData]);
 
   const handleSettingsClick = () => {
     if (!storedPasscode) {
@@ -575,6 +581,7 @@ export default function App() {
     }
   };
 
+  // Upgraded dual-action Apps Script batch code containing standard fast writing logic
   const googleAppsScriptCode = `function doGet(e) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = ss.getSheetByName("Inventory");
@@ -584,10 +591,6 @@ export default function App() {
     sheet.appendRow(["Name", "Set code", "Set name", "Collector number", "Foil", "Rarity", "Quantity", "Scryfall ID", "Purchase price"]);
     sheet.appendRow(["Darkslick Shores", "ONE", "Phyrexia: All Will Be One", "250", "normal", "rare", "2", "bcbda15b-e49a-4445-a0e1-f221aa82c1e8", "2.99"]);
     sheet.appendRow(["Quicksilver Fisher", "ONE", "Phyrexia: All Will Be One", "287", "foil", "common", "4", "b394cdd1-a632-4b57-8356-4e2d9c9620f7", "0.49"]);
-    sheet.appendRow(["Phyrexian Mite", "TONE", "Phyrexia: All Will Be One Tokens", "12", "normal", "common", "3", "a0b4b9cc-b0a4-4383-881b-e843e5d8a8c1", "0.35"]);
-    sheet.appendRow(["Requiem Monolith", "EOE", "Edge of Eternities", "113", "normal", "rare", "1", "837d710a-652f-4c60-a52d-d786231160a4", "0.49"]);
-    sheet.appendRow(["Fracture", "STA", "Strixhaven Mystical Archive", "65", "normal", "rare", "2", "34005b2e-6270-4ac3-9d35-021d916125ee", "0.79"]);
-    sheet.appendRow(["Molten-Core Maestro", "BIG", "The Big Score", "125", "normal", "rare", "1", "111697", "326dfe32-3674-4a11-acd8-5ba62371235a", "2.99"]);
   }
   
   var data = sheet.getDataRange().getValues();
@@ -635,6 +638,7 @@ function doPost(e) {
     var data = JSON.parse(jsonString);
     var ss = SpreadsheetApp.getActiveSpreadsheet();
     
+    // Upgraded high-speed batch execution preventing 30 second timeouts
     if (data.action === "upload") {
       var sheet = ss.getSheetByName("Inventory");
       if (sheet) {
@@ -645,10 +649,11 @@ function doPost(e) {
       var cards = data.cards;
       if (cards.length > 0) {
         var headers = ["Name", "Set code", "Set name", "Collector number", "Foil", "Rarity", "Quantity", "Scryfall ID", "Purchase price"];
-        sheet.appendRow(headers);
+        var rows = [headers];
+        
         for (var i = 0; i < cards.length; i++) {
           var c = cards[i];
-          sheet.appendRow([
+          rows.push([
             c.name || "",
             c.setcode || "",
             c.setname || "",
@@ -660,6 +665,8 @@ function doPost(e) {
             c.purchaseprice !== undefined ? c.purchaseprice : 0
           ]);
         }
+        
+        sheet.getRange(1, 1, rows.length, rows[0].length).setValues(rows);
       }
       return ContentService.createTextOutput(JSON.stringify({ "status": "success", "message": "Global inventory updated!" }))
                            .setMimeType(ContentService.MimeType.JSON);
@@ -837,12 +844,12 @@ function doPost(e) {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-gradient-to-br from-rose-500 to-purple-600 rounded-xl text-white shadow-md">
-              <Sparkles className="w-6 h-6" />
+              <Sparkles className="w-6 h-6 animate-pulse" />
             </div>
             <div>
               <div className="flex items-center gap-2">
                 <h1 className="text-xl font-bold tracking-tight bg-gradient-to-r from-white via-slate-200 to-rose-400 bg-clip-text text-transparent">
-                  Quitting Sale
+                  Planeswalker Bazaar
                 </h1>
                 {isGlobalMode ? (
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-extrabold bg-emerald-950/80 text-emerald-400 border border-emerald-800 animate-pulse">
@@ -1168,12 +1175,6 @@ function doPost(e) {
                               loading="lazy"
                               className="w-full h-full object-cover transition duration-300 group-hover:scale-105"
                             />
-                          ) : details.failed ? (
-                            <div className="flex flex-col items-center gap-2 p-4 text-center">
-                              <Database className="w-8 h-8 text-slate-600" />
-                              <span className="text-xs font-bold text-slate-500">{card.name}</span>
-                              <span className="text-[10px] text-slate-600">No Image Available</span>
-                            </div>
                           ) : (
                             <div className="flex flex-col items-center gap-2 p-4 text-center">
                               <div className="w-10 h-10 rounded-full bg-slate-900 flex items-center justify-center animate-pulse">
@@ -1241,12 +1242,11 @@ function doPost(e) {
                   })}
                 </div>
 
-                {/* Show More Pagination control */}
                 {filteredAndSortedCards.length > visibleCount && (
                   <div className="mt-12 text-center">
                     <button
                       onClick={() => setVisibleCount(prev => prev + 80)}
-                      className="px-8 py-4 bg-slate-900 hover:bg-slate-850 border border-slate-800 hover:border-slate-700 text-slate-200 font-bold text-sm rounded-xl transition duration-200 shadow-md"
+                      className="px-8 py-4 bg-slate-900 hover:bg-slate-850 border border-slate-800 hover:border-slate-700 text-slate-200 font-bold text-sm rounded-xl transition duration-200 shadow-md animate-pulse"
                     >
                       Show More Cards
                     </button>
