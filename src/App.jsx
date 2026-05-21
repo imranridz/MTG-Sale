@@ -20,33 +20,9 @@ import {
   Check,
   ArrowUpDown,
   Lock,
-  KeyRound,
-  CloudLightning,
-  Cloud
+  KeyRound
 } from 'lucide-react';
 
-import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
-import { getFirestore, doc, setDoc, onSnapshot } from 'firebase/firestore';
-
-// Safe extraction of Firebase config to prevent ReferenceError during Vercel builds
-const firebaseConfig = typeof __firebase_config !== 'undefined' 
-  ? JSON.parse(__firebase_config) 
-  : {
-      apiKey: "mock-api-key",
-      authDomain: "mock-auth-domain",
-      projectId: "mock-project-id",
-      storageBucket: "mock-storage-bucket",
-      messagingSenderId: "mock-messaging-id",
-      appId: "mock-app-id"
-    };
-
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-
-// Default CSV content parsed from user's upload to make it work immediately
 const DEFAULT_CSV_DATA = `Name,Set code,Set name,Collector number,Foil,Rarity,Quantity,ManaBox ID,Scryfall ID,Purchase price,Misprint,Altered,Condition,Language,Purchase price currency,Added
 Darkslick Shores,ONE,Phyrexia: All Will Be One,250,normal,rare,2,78812,bcbda15b-e49a-4445-a0e1-f221aa82c1e8,2.99,false,false,near_mint,en,USD,2025-10-05T14:38:01.559Z
 Quicksilver Fisher,ONE,Phyrexia: All Will Be One,287,foil,common,4,78789,b394cdd1-a632-4b57-8356-4e2d9c9620f7,0.49,false,false,near_mint,en,USD,2025-10-05T14:38:01.559Z
@@ -56,30 +32,32 @@ Fracture,STA,Strixhaven Mystical Archive,65,normal,rare,2,112588,34005b2e-6270-4
 Molten-Core Maestro,BIG,The Big Score,125,normal,rare,1,111697,326dfe32-3674-4a11-acd8-5ba62371235a,2.99,false,false,near_mint,en,USD,2026-05-01T12:42:00.924Z`;
 
 export default function App() {
-  const [user, setUser] = useState(null);
-  const [cards, setCards] = useState([]);
+  const [cards, setCards] = useState(() => {
+    const saved = localStorage.getItem('mtg_store_inventory');
+    return saved ? JSON.parse(saved) : [];
+  });
   const [scryfallData, setScryfallData] = useState({});
   const [loading, setLoading] = useState(false);
   const [cart, setCart] = useState({});
   const [copiedScript, setCopiedScript] = useState(false);
-  const [isSyncing, setIsSyncing] = useState(true);
   
-  // Storage state config
-  const [sheetUrl, setSheetUrl] = useState('');
+  const [sheetUrl, setSheetUrl] = useState(() => {
+    return localStorage.getItem('mtg_store_sheet_url') || '';
+  });
   
-  // Security passcodes
-  const [storedPasscode, setStoredPasscode] = useState('');
+  const [storedPasscode, setStoredPasscode] = useState(() => {
+    return localStorage.getItem('mtg_store_owner_passcode') || '';
+  });
   const [passcodeAttempt, setPasscodeAttempt] = useState('');
   const [newPasscode, setNewPasscode] = useState('');
   const [isPasscodePromptOpen, setIsPasscodePromptOpen] = useState(false);
   const [isPasscodeSetupOpen, setIsPasscodeSetupOpen] = useState(false);
 
-  // UI states
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedRarities, setSelectedRarities] = useState([]);
   const [selectedColors, setSelectedColors] = useState([]);
   const [showFoilOnly, setShowFoilOnly] = useState(false);
-  const [sortBy, setSortBy] = useState('price-desc'); // Default to Price High to Low
+  const [sortBy, setSortBy] = useState('price-desc');
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [buyerName, setBuyerName] = useState('');
@@ -87,59 +65,6 @@ export default function App() {
   const [orderSubmitted, setOrderSubmitted] = useState(false);
   const [submittingOrder, setSubmittingOrder] = useState(false);
   const [alertMsg, setAlertMsg] = useState(null);
-
-  useEffect(() => {
-    const initAuth = async () => {
-      try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
-        } else {
-          await signInAnonymously(auth);
-        }
-      } catch (err) {
-        console.error("Authentication failed:", err);
-      }
-    };
-    initAuth();
-    const unsubscribe = onAuthStateChanged(auth, setUser);
-    return () => unsubscribe();
-  }, []);
-
-  useEffect(() => {
-    if (!user) return;
-    setIsSyncing(true);
-
-    const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'globalStore', 'state');
-    
-    const unsubscribe = onSnapshot(docRef, (docSnap) => {
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        if (data.cards) {
-          setCards(data.cards);
-          fetchScryfallDetails(data.cards);
-        }
-        if (data.sheetUrl !== undefined) setSheetUrl(data.sheetUrl);
-        if (data.passcode !== undefined) setStoredPasscode(data.passcode);
-      } else {
-        // First initialization for this workspace
-        const defaultParsed = parseCSV(DEFAULT_CSV_DATA);
-        setDoc(docRef, {
-          cards: defaultParsed,
-          sheetUrl: '',
-          passcode: ''
-        }).then(() => {
-          setCards(defaultParsed);
-          fetchScryfallDetails(defaultParsed);
-        });
-      }
-      setIsSyncing(false);
-    }, (error) => {
-      console.error("Firestore synchronisation error:", error);
-      setIsSyncing(false);
-    });
-
-    return () => unsubscribe();
-  }, [user]);
 
   const normalizeHeaderKey = (key) => {
     return key.toLowerCase().trim().replace(/[\s_-]+/g, '');
@@ -233,27 +158,37 @@ export default function App() {
     }, 4500);
   };
 
-  const handleFileUpload = async (e) => {
+  useEffect(() => {
+    if (cards.length === 0) {
+      const defaultParsed = parseCSV(DEFAULT_CSV_DATA);
+      setCards(defaultParsed);
+      fetchScryfallDetails(defaultParsed);
+    } else {
+      fetchScryfallDetails(cards);
+    }
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem('mtg_store_inventory', JSON.stringify(cards));
+  }, [cards]);
+
+  useEffect(() => {
+    localStorage.setItem('mtg_store_sheet_url', sheetUrl);
+  }, [sheetUrl]);
+
+  const handleFileUpload = (e) => {
     const file = e.target.files[0];
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = async (event) => {
+    reader.onload = (event) => {
       const text = event.target.result;
       const parsed = parseCSV(text);
       if (parsed.length > 0) {
-        setIsSyncing(true);
-        try {
-          const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'globalStore', 'state');
-          await setDoc(docRef, { cards: parsed }, { merge: true });
-          setCart({}); // Reset local cart
-          showToast(`Successfully published ${parsed.length} cards globally!`, 'success');
-        } catch (error) {
-          console.error(error);
-          showToast('Failed to sync inventory with global database.', 'error');
-        } finally {
-          setIsSyncing(false);
-        }
+        setCards(parsed);
+        setCart({});
+        fetchScryfallDetails(parsed);
+        showToast(`Successfully uploaded ${parsed.length} cards to inventory!`, 'success');
       } else {
         showToast('No valid MTG card rows found in the CSV file.', 'error');
       }
@@ -264,17 +199,10 @@ export default function App() {
   const fetchScryfallDetails = async (cardList) => {
     if (!cardList || cardList.length === 0) return;
 
-    const needed = cardList.filter(card => {
-      const uid = getCardUniqueId(card);
-      return !scryfallData[uid] && !scryfallData[card.scryfallid];
-    });
-
-    if (needed.length === 0) return;
-
     setLoading(true);
     const updatedDetails = { ...scryfallData };
     
-    const identifiers = needed.map(card => {
+    const identifiers = cardList.map(card => {
       if (card.scryfallid && card.scryfallid.trim() !== '') {
         return { id: card.scryfallid };
       } else if (card.name && card.setcode) {
@@ -341,6 +269,7 @@ export default function App() {
       setScryfallData(updatedDetails);
     } catch (err) {
       console.error('Error contacting Scryfall API:', err);
+      showToast('Some card images could not load from Scryfall.', 'warning');
     } finally {
       setLoading(false);
     }
@@ -359,8 +288,13 @@ export default function App() {
     const maxQty = parseInt(card.quantity) || 0;
     const currentQty = cart[cardId]?.quantity || 0;
 
+    if (maxQty <= 0) {
+      showToast('This card is currently sold out.', 'error');
+      return;
+    }
+
     if (currentQty >= maxQty) {
-      showToast(`Cannot add more. Only ${maxQty} remaining globally.`, 'warning');
+      showToast(`Cannot add more. Only ${maxQty} remaining in stock.`, 'warning');
       return;
     }
 
@@ -391,21 +325,24 @@ export default function App() {
     return Object.values(cart).reduce((sum, item) => sum + item.quantity, 0);
   }, [cart]);
 
-  const getMultiplier = (count) => {
-    if (count >= 10) return 2.0;
-    if (count >= 5) return 2.3;
-    return 2.5;
-  };
-
-  const cartTotal = useMemo(() => {
-    const rawTotal = Object.values(cart).reduce((sum, item) => {
+  const subtotalPreMultiplier = useMemo(() => {
+    return Object.values(cart).reduce((sum, item) => {
       const price = parseFloat(item.card.purchaseprice) || 0;
       return sum + (price * item.quantity);
     }, 0);
-    return rawTotal * getMultiplier(cartTotalItemsCount);
-  }, [cart, cartTotalItemsCount]);
+  }, [cart]);
 
-  // Color selection criteria
+  const cartMultiplier = useMemo(() => {
+    if (cartTotalItemsCount >= 10) return 2.0;
+    if (cartTotalItemsCount >= 5) return 2.3;
+    if (cartTotalItemsCount >= 1) return 2.5;
+    return 1.0;
+  }, [cartTotalItemsCount]);
+
+  const finalTotalRM = useMemo(() => {
+    return subtotalPreMultiplier * cartMultiplier;
+  }, [subtotalPreMultiplier, cartMultiplier]);
+
   const colorOptions = [
     { code: 'W', name: 'White', colorClass: 'bg-yellow-100 text-yellow-800 border-yellow-300' },
     { code: 'U', name: 'Blue', colorClass: 'bg-blue-100 text-blue-800 border-blue-300' },
@@ -501,25 +438,18 @@ export default function App() {
     }
   };
 
-  const handleCreatePasscode = async (e) => {
+  const handleCreatePasscode = (e) => {
     e.preventDefault();
     if (!newPasscode.trim()) {
       showToast('Please enter a valid passcode.', 'warning');
       return;
     }
-    setIsSyncing(true);
-    try {
-      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'globalStore', 'state');
-      await setDoc(docRef, { passcode: newPasscode }, { merge: true });
-      setIsPasscodeSetupOpen(false);
-      setIsSettingsOpen(true);
-      setNewPasscode('');
-      showToast('Global Admin Passcode successfully set!', 'success');
-    } catch (error) {
-      showToast('Could not save configuration settings globally.', 'error');
-    } finally {
-      setIsSyncing(false);
-    }
+    localStorage.setItem('mtg_store_owner_passcode', newPasscode);
+    setStoredPasscode(newPasscode);
+    setIsPasscodeSetupOpen(false);
+    setIsSettingsOpen(true);
+    setNewPasscode('');
+    showToast('Storeowner Passcode successfully created!', 'success');
   };
 
   const handleVerifyPasscode = (e) => {
@@ -535,29 +465,12 @@ export default function App() {
     }
   };
 
-  const handleChangePasscodeInsideSettings = async () => {
+  const handleChangePasscodeInsideSettings = () => {
     const freshPass = prompt('Enter a new security passcode:');
     if (freshPass && freshPass.trim()) {
-      setIsSyncing(true);
-      try {
-        const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'globalStore', 'state');
-        await setDoc(docRef, { passcode: freshPass.trim() }, { merge: true });
-        showToast('Global admin passcode updated!', 'success');
-      } catch (err) {
-        showToast('Failed to sync new settings.', 'error');
-      } finally {
-        setIsSyncing(false);
-      }
-    }
-  };
-
-  const updateSheetUrlGlobal = async (url) => {
-    setSheetUrl(url);
-    try {
-      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'globalStore', 'state');
-      await setDoc(docRef, { sheetUrl: url }, { merge: true });
-    } catch (err) {
-      console.error(err);
+      localStorage.setItem('mtg_store_owner_passcode', freshPass.trim());
+      setStoredPasscode(freshPass.trim());
+      showToast('Owner passcode changed successfully!', 'success');
     }
   };
 
@@ -606,10 +519,6 @@ export default function App() {
       return;
     }
 
-    setIsSyncing(true);
-    setSubmittingOrder(true);
-
-    // Lock quantities globally
     const updatedCards = cards.map(card => {
       const cardId = getCardUniqueId(card);
       const cartItem = cart[cardId];
@@ -621,48 +530,59 @@ export default function App() {
       return card;
     });
 
+    setCards(updatedCards);
+    localStorage.setItem('mtg_store_inventory', JSON.stringify(updatedCards));
+
+    const payload = {
+      buyerName,
+      buyerPhone,
+      totalValue: finalTotalRM,
+      items: Object.values(cart).map(item => ({
+        name: item.card.name,
+        set: item.card.setcode,
+        set_name: item.card.setname,
+        collectorNumber: item.card.collectornumber,
+        foil: item.card.foil,
+        quantity: item.quantity,
+        price: parseFloat(item.card.purchaseprice) || 0
+      }))
+    };
+
+    setSubmittingOrder(true);
+
+    if (!sheetUrl) {
+      setTimeout(() => {
+        setSubmittingOrder(false);
+        setOrderSubmitted(true);
+        setCart({});
+        showToast('Demo checkout successful! No Google Sheet Webhook URL was configured, so this was simulated.', 'info');
+      }, 1500);
+      return;
+    }
+
     try {
-      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'globalStore', 'state');
-      await setDoc(docRef, { cards: updatedCards }, { merge: true });
+      await fetch(sheetUrl, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: {
+          'Content-Type': 'text/plain'
+        },
+        body: JSON.stringify(payload)
+      });
 
-      const payload = {
-        buyerName,
-        buyerPhone,
-        totalValue: cartTotal,
-        items: Object.values(cart).map(item => ({
-          name: item.card.name,
-          set: item.card.setcode,
-          collectorNumber: item.card.collectornumber,
-          quantity: item.quantity
-        }))
-      };
-
-      if (sheetUrl) {
-        await fetch(sheetUrl, {
-          method: 'POST',
-          mode: 'no-cors',
-          headers: { 'Content-Type': 'text/plain' },
-          body: JSON.stringify(payload)
-        });
-        showToast('Order submitted globally directly to your Google Sheet!', 'success');
-      } else {
-        showToast('Checkout simulated! Config a spreadsheet url to persist sales reports.', 'info');
-      }
-
+      setSubmittingOrder(false);
       setOrderSubmitted(true);
       setCart({});
+      showToast('Order submitted successfully directly to your Google Sheet!', 'success');
     } catch (error) {
       console.error(error);
-      showToast('Error syncing purchase ledger across servers.', 'error');
-    } finally {
       setSubmittingOrder(false);
-      setIsSyncing(false);
+      showToast('Error communicating with Google Sheets. Check your App URL configuration.', 'error');
     }
   };
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans antialiased selection:bg-rose-500 selection:text-white">
-      {/* Toast alert banner */}
       {alertMsg && (
         <div className={`fixed bottom-6 right-6 z-50 flex items-center gap-3 px-5 py-4 rounded-xl shadow-2xl transition-all border transform translate-y-0 scale-100 ${
           alertMsg.type === 'success' ? 'bg-emerald-950 text-emerald-200 border-emerald-500' :
@@ -677,7 +597,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Header Bar */}
+      {}
       <header className="sticky top-0 z-40 bg-slate-900/95 backdrop-blur-md border-b border-slate-800 shadow-lg">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -685,21 +605,10 @@ export default function App() {
               <Sparkles className="w-6 h-6 animate-pulse" />
             </div>
             <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-xl font-bold tracking-tight bg-gradient-to-r from-white via-slate-200 to-rose-400 bg-clip-text text-transparent">
-                  Quitting Sale
-                </h1>
-                {isSyncing ? (
-                  <span className="flex items-center gap-1 px-2 py-0.5 bg-slate-800 text-[10px] rounded-full text-amber-400">
-                    <CloudLightning className="w-3 h-3 animate-spin" /> Syncing
-                  </span>
-                ) : (
-                  <span className="flex items-center gap-1 px-2 py-0.5 bg-emerald-950/60 border border-emerald-800 text-[10px] rounded-full text-emerald-400">
-                    <Cloud className="w-3 h-3" /> Live
-                  </span>
-                )}
-              </div>
-              <p className="text-xs text-slate-400">Shared Global Database</p>
+              <h1 className="text-xl font-bold tracking-tight bg-gradient-to-r from-white via-slate-200 to-rose-400 bg-clip-text text-transparent">
+                Quitting Sale
+              </h1>
+              <p className="text-xs text-slate-400">Everything for sale</p>
             </div>
           </div>
 
@@ -726,7 +635,7 @@ export default function App() {
         </div>
       </header>
 
-      {/* Hero Banner Section */}
+      {}
       <section className="relative overflow-hidden bg-slate-900 py-12 border-b border-slate-800">
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(244,63,94,0.1),transparent)]"></div>
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative z-10">
@@ -742,16 +651,15 @@ export default function App() {
                 Click on any card to add to cart. Submit with your name and telephone number, and I will contact you for confirmation.
               </p>
               <div className="space-y-1 mb-6 border-l-2 border-rose-500 pl-4 py-1">
-                <p className="text-slate-300 text-sm font-semibold">1-4 cards: CKD x 2.5 RM</p>
-                <p className="text-slate-300 text-sm font-semibold">5-9 cards: CKD x 2.3 RM</p>
-                <p className="text-slate-300 text-sm font-semibold">10 or more cards: CKD x 2.0 RM</p>
+                <p className="text-slate-300 text-sm font-semibold">1-4 cards: Subtotal x 2.5 RM</p>
+                <p className="text-slate-300 text-sm font-semibold">5-9 cards: Subtotal x 2.3 RM</p>
+                <p className="text-slate-300 text-sm font-semibold">10 or more cards: Subtotal x 2.0 RM</p>
               </div>
               <div className="text-xs text-slate-400">
-                Currently showcasing <strong className="text-slate-200">{cards.length}</strong> unique listings globally
+                Currently showcasing <strong className="text-slate-200">{cards.length}</strong> unique listings
               </div>
             </div>
             
-            {/* Visual Callout block */}
             <div className="bg-slate-950/60 p-6 rounded-2xl border border-slate-800/80 shadow-2xl relative">
               <h3 className="text-sm font-bold text-slate-300 mb-3 flex items-center gap-2">
                 <Info className="w-4 h-4 text-rose-400" />
@@ -764,11 +672,11 @@ export default function App() {
                 </li>
                 <li className="flex gap-2">
                   <span className="flex-none font-bold text-rose-400 bg-rose-950/40 w-5 h-5 rounded-full flex items-center justify-center text-xs">2</span>
-                  <span>Click the cards you desire to add them to your cart.</span>
+                  <span>Click the cards you desire to add them to your cart. Sold items are grayed out.</span>
                 </li>
                 <li className="flex gap-2">
                   <span className="flex-none font-bold text-rose-400 bg-rose-950/40 w-5 h-5 rounded-full flex items-center justify-center text-xs">3</span>
-                  <span>Open your cart, type in your delivery info, and checkout. Card stock decreases globally for everyone.</span>
+                  <span>Open your cart, type in your delivery info, and checkout.</span>
                 </li>
               </ol>
             </div>
@@ -776,11 +684,10 @@ export default function App() {
         </div>
       </section>
 
-      {/* Main Grid & Filters Content */}
+      {}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
         <div className="lg:flex lg:gap-8">
           
-          {/* Filters Sidebar */}
           <aside className="lg:w-64 flex-none space-y-6 mb-8 lg:mb-0">
             <div className="bg-slate-900 p-5 rounded-2xl border border-slate-800 shadow-md">
               <div className="flex items-center justify-between pb-4 border-b border-slate-800 mb-5">
@@ -803,7 +710,6 @@ export default function App() {
                 )}
               </div>
 
-              {/* Text Search */}
               <div className="mb-6">
                 <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Search Cards</label>
                 <div className="relative">
@@ -818,7 +724,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Color Identity selection */}
               <div className="mb-6">
                 <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2.5">Color Identity</label>
                 <div className="flex flex-wrap gap-1.5">
@@ -843,7 +748,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Rarity filter */}
               <div className="mb-6">
                 <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2.5">Rarity</label>
                 <div className="space-y-2">
@@ -875,7 +779,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Foil filter */}
               <div className="pt-2 border-t border-slate-800">
                 <label className="flex items-center gap-2.5 cursor-pointer select-none py-1.5">
                   <input
@@ -894,10 +797,9 @@ export default function App() {
             </div>
           </aside>
 
-          {/* Card Tiles Section */}
+          {}
           <div className="flex-1">
             
-            {/* Sort Selection header */}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 pb-4 border-b border-slate-900">
               <h3 className="text-sm font-semibold text-slate-400">
                 Showing <strong className="text-white">{filteredAndSortedCards.length}</strong> of {cards.length} cards
@@ -932,7 +834,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* Grid Layout of Tiles */}
             {filteredAndSortedCards.length === 0 ? (
               <div className="bg-slate-900 border border-slate-800 rounded-2xl py-16 px-4 text-center">
                 <Database className="w-12 h-12 text-slate-600 mx-auto mb-4" />
@@ -959,19 +860,24 @@ export default function App() {
                   const isFoil = isCardFoil(card);
                   const cardId = getCardUniqueId(card);
                   const inCartCount = cart[cardId]?.quantity || 0;
-                  const availableQty = (parseInt(card.quantity) || 0) - inCartCount;
+                  const originalQty = parseInt(card.quantity) || 0;
+                  const availableQty = originalQty - inCartCount;
+
+                  const isSoldOut = originalQty <= 0;
 
                   return (
                     <div 
                       key={card.rowId}
-                      onClick={() => availableQty > 0 && addToCart(card)}
+                      onClick={() => !isSoldOut && availableQty > 0 && addToCart(card)}
                       className={`group relative bg-slate-900 rounded-2xl overflow-hidden border transition-all duration-300 flex flex-col justify-between cursor-pointer ${
-                        availableQty === 0 
-                          ? 'border-slate-800 opacity-60' 
-                          : 'border-slate-800/80 hover:border-slate-700 hover:shadow-xl hover:shadow-slate-950/50 hover:-translate-y-1'
+                        isSoldOut 
+                          ? 'border-slate-800/40 opacity-50 cursor-not-allowed select-none' 
+                          : availableQty === 0 
+                            ? 'border-slate-800 opacity-60' 
+                            : 'border-slate-800/80 hover:border-slate-700 hover:shadow-xl hover:shadow-slate-950/50 hover:-translate-y-1'
                       }`}
                     >
-                      {isFoil && (
+                      {isFoil && !isSoldOut && (
                         <div className="absolute inset-0 pointer-events-none rounded-2xl opacity-15 bg-gradient-to-tr from-pink-500 via-purple-500 to-teal-500 z-10 animate-pulse"></div>
                       )}
 
@@ -992,18 +898,22 @@ export default function App() {
                       </div>
 
                       <div className="absolute top-2 right-2 z-20">
-                        {availableQty > 0 ? (
+                        {isSoldOut ? (
+                          <span className="px-2 py-0.5 bg-red-950/90 text-red-200 text-xs font-bold rounded-md border border-red-800 shadow-sm">
+                            SOLD OUT
+                          </span>
+                        ) : availableQty > 0 ? (
                           <span className="px-2 py-0.5 bg-slate-950/80 backdrop-blur-md text-slate-200 text-xs font-semibold rounded-md border border-slate-700">
                             Qty: {availableQty}
                           </span>
                         ) : (
-                          <span className="px-2 py-0.5 bg-rose-950/80 text-rose-300 text-xs font-bold rounded-md border border-rose-900 shadow-sm">
-                            SOLD
+                          <span className="px-2 py-0.5 bg-amber-950/90 text-amber-200 text-xs font-bold rounded-md border border-amber-800 shadow-sm">
+                            ALL SELECTED
                           </span>
                         )}
                       </div>
 
-                      <div className={`relative aspect-[3/4] bg-slate-950 overflow-hidden flex items-center justify-center ${availableQty === 0 ? 'grayscale opacity-75' : ''}`}>
+                      <div className={`relative aspect-[3/4] bg-slate-950 overflow-hidden flex items-center justify-center ${isSoldOut ? 'grayscale contrast-75' : ''}`}>
                         {details.image ? (
                           <img
                             src={details.image}
@@ -1039,28 +949,35 @@ export default function App() {
                       </div>
 
                       <div className="p-4 bg-slate-900 border-t border-slate-800 flex-grow flex flex-col justify-between">
-                        <h4 className={`font-bold text-sm group-hover:text-rose-400 transition truncate ${availableQty === 0 ? 'text-slate-500' : 'text-white'}`} title={card.name}>
+                        <h4 className={`font-bold text-sm group-hover:text-rose-400 transition truncate ${isSoldOut ? 'text-slate-500 line-through' : 'text-white'}`} title={card.name}>
                           {card.name}
                         </h4>
                         
                         <div className="mt-3 flex items-center justify-between">
                           <div>
                             <span className="text-[11px] text-slate-500 block uppercase font-bold tracking-wider">Store Price</span>
-                            <span className={`text-lg font-extrabold ${availableQty === 0 ? 'text-slate-600' : 'text-rose-400'}`}>
+                            <span className={`text-lg font-extrabold ${isSoldOut ? 'text-slate-600' : 'text-rose-400'}`}>
                               ${parseFloat(card.purchaseprice || 0).toFixed(2)}
                             </span>
                           </div>
 
-                          {availableQty > 0 ? (
+                          {isSoldOut ? (
+                            <button disabled className="px-3 py-1.5 bg-slate-950 text-slate-650 rounded-lg text-xs font-bold cursor-not-allowed border border-slate-800">
+                              SOLD OUT
+                            </button>
+                          ) : availableQty > 0 ? (
                             <button 
-                              onClick={() => addToCart(card)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                addToCart(card);
+                              }}
                               className="px-3 py-1.5 bg-slate-800 hover:bg-rose-600 text-slate-200 hover:text-white rounded-lg text-xs font-bold transition duration-200"
                             >
                               Select
                             </button>
                           ) : (
-                            <button disabled className="px-3 py-1.5 bg-slate-950 text-slate-600 rounded-lg text-xs font-bold cursor-not-allowed border border-slate-800">
-                              SOLD OUT
+                            <button disabled className="px-3 py-1.5 bg-slate-950 text-amber-500 rounded-lg text-xs font-bold cursor-not-allowed border border-slate-800">
+                              Selected
                             </button>
                           )}
                         </div>
@@ -1077,7 +994,7 @@ export default function App() {
         </div>
       </main>
 
-      {/* Cart Modal / Drawer */}
+      {}
       {isCartOpen && (
         <div className="fixed inset-0 z-50 overflow-hidden">
           <div 
@@ -1110,7 +1027,7 @@ export default function App() {
                       </div>
                       <h4 className="text-xl font-bold text-white mb-2">Order Submitted!</h4>
                       <p className="text-slate-400 text-sm max-w-xs mx-auto mb-6">
-                        Thank you! Your purchase selections and details were saved directly into the ledger. The stock has been synced globally.
+                        Thank you! Your selections have been saved. If you connected a Google Sheet, your details are logged in the active ledger.
                       </p>
                       <button
                         onClick={() => setOrderSubmitted(false)}
@@ -1127,7 +1044,6 @@ export default function App() {
                     </div>
                   ) : (
                     <>
-                      {/* Cart Cards list */}
                       <div className="divide-y divide-slate-800">
                         {Object.values(cart).map((item) => {
                           const details = getCardDetails(item.card);
@@ -1167,7 +1083,6 @@ export default function App() {
                                     ${(cardPrice * item.quantity).toFixed(2)}
                                   </span>
 
-                                  {/* Qty incrementors */}
                                   <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-lg border border-slate-800">
                                     <button 
                                       type="button"
@@ -1200,7 +1115,6 @@ export default function App() {
                         })}
                       </div>
 
-                      {/* Checkout Buyer Form */}
                       <form onSubmit={handleCheckout} className="pt-6 border-t border-slate-800 space-y-4">
                         <h4 className="text-sm font-bold text-slate-300 uppercase tracking-wider">Buyer Information</h4>
                         
@@ -1228,19 +1142,18 @@ export default function App() {
                           />
                         </div>
 
-                        {/* Order Summary Calculations */}
                         <div className="bg-slate-950 p-4 rounded-xl border border-slate-800/80 space-y-2 mt-2">
                           <div className="flex justify-between text-xs text-slate-400">
                             <span>Base Subtotal</span>
-                            <span>{Object.values(cart).reduce((sum, item) => sum + (parseFloat(item.card.purchaseprice || 0) * item.quantity), 0).toFixed(2)} USD</span>
+                            <span>{subtotalPreMultiplier.toFixed(2)} USD</span>
                           </div>
                           <div className="flex justify-between text-xs text-slate-400">
                             <span>Volume Multiplier ({cartTotalItemsCount} cards)</span>
-                            <span className="text-amber-400 font-bold">x{getMultiplier(cartTotalItemsCount).toFixed(1)}</span>
+                            <span className="text-amber-400 font-bold">x{cartMultiplier.toFixed(1)}</span>
                           </div>
                           <div className="flex justify-between text-sm font-bold text-slate-200 border-t border-slate-900 pt-2">
                             <span>Final Total</span>
-                            <span className="text-rose-400 text-lg font-extrabold">{cartTotal.toFixed(2)} RM</span>
+                            <span className="text-rose-400 text-lg font-extrabold">{finalTotalRM.toFixed(2)} RM</span>
                           </div>
                         </div>
 
@@ -1248,7 +1161,7 @@ export default function App() {
                           <div className="p-3 bg-amber-950/40 border border-amber-900/60 rounded-xl text-xs text-amber-300 flex gap-2">
                             <Info className="w-4 h-4 text-amber-400 flex-none mt-0.5" />
                             <span>
-                              Storeowner: No Google Sheets URL configured globally. Checkout will decrease stock live, but won't send webhook reports.
+                              Storeowner: No Google Sheets URL is set. Placing order will simulate a checkout. Set it up using the Settings gear.
                             </span>
                           </div>
                         )}
@@ -1261,7 +1174,7 @@ export default function App() {
                           {submittingOrder ? (
                             <>
                               <Loader className="w-4 h-4 animate-spin" />
-                              <span>Syncing Purchase...</span>
+                              <span>Sending Purchase...</span>
                             </>
                           ) : (
                             <>
@@ -1281,7 +1194,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Security Gate: Initial Passcode Setup */}
+      {}
       {isPasscodeSetupOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div onClick={() => setIsPasscodeSetupOpen(false)} className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm" />
@@ -1291,7 +1204,7 @@ export default function App() {
             </div>
             <h3 className="text-lg font-extrabold text-white mb-2">Create Admin Passcode</h3>
             <p className="text-xs text-slate-400 mb-6 leading-relaxed">
-              Welcome! Please configure a custom security passcode for your store. This passcode is saved in the global live database, allowing you to access configurations from any browser or device.
+              Welcome! Since this is your first time accessing the Admin menu, please configure a custom secret passcode. Only you will be able to access settings and inventory uploads from this browser.
             </p>
             <form onSubmit={handleCreatePasscode} className="space-y-4">
               <input
@@ -1322,7 +1235,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Security Gate: Verify Owner Passcode */}
       {isPasscodePromptOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div onClick={() => setIsPasscodePromptOpen(false)} className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm" />
@@ -1332,7 +1244,7 @@ export default function App() {
             </div>
             <h3 className="text-lg font-extrabold text-white mb-2">Storeowner Verification</h3>
             <p className="text-xs text-slate-400 mb-6">
-              Enter your passcode to open settings and upload card databases globally.
+              Enter your passcode to open settings and upload card databases.
             </p>
             <form onSubmit={handleVerifyPasscode} className="space-y-4">
               <input
@@ -1367,7 +1279,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Configuration & Setup Guide (Settings Modal) */}
+      {}
       {isSettingsOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div 
@@ -1390,7 +1302,7 @@ export default function App() {
                 </div>
                 <div>
                   <h3 className="font-extrabold text-xl text-white">Storeowner Settings</h3>
-                  <p className="text-xs text-slate-400">Configure global card spreadsheet deployment and updates</p>
+                  <p className="text-xs text-slate-400">Configure your target spreadsheet to save buyer details</p>
                 </div>
               </div>
               <button
@@ -1403,20 +1315,19 @@ export default function App() {
             </div>
 
             <div className="space-y-6">
-              {/* CSV Upload */}
               <div className="bg-slate-950 p-5 rounded-2xl border border-slate-800">
                 <h4 className="text-sm font-bold text-slate-200 mb-1 flex items-center gap-2">
                   <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
-                  Global Inventory Database
+                  Inventory Database
                 </h4>
                 <p className="text-xs text-slate-400 mb-4 leading-relaxed">
-                  Uploading a CSV file here publishes the list globally. Every visitor across any device will instantly see these exact listings, prices, and quantities.
+                  Upload a standard ManaBox, Scryfall, or custom formatted MTG card lists in `.csv` format to update stock details, quantities, and pricing.
                 </p>
                 
                 <div className="flex items-center gap-3">
                   <label className="flex items-center gap-2 px-5 py-3 bg-slate-900 hover:bg-slate-850 text-slate-200 text-xs font-semibold rounded-xl cursor-pointer transition border border-slate-800/80">
                     <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
-                    <span>Upload &amp; Publish CSV</span>
+                    <span>Upload New CSV File</span>
                     <input
                       type="file"
                       accept=".csv"
@@ -1425,38 +1336,36 @@ export default function App() {
                     />
                   </label>
                   <span className="text-xs text-slate-500">
-                    Currently hosting <strong className="text-slate-300">{cards.length}</strong> card items globally.
+                    Currently tracking <strong className="text-slate-300">{cards.length}</strong> card items.
                   </span>
                 </div>
               </div>
 
-              {/* Webhook Configuration Input */}
               <div className="bg-slate-950 p-5 rounded-2xl border border-slate-800">
                 <h4 className="text-sm font-bold text-slate-200 mb-2">Google Apps Script Web App URL</h4>
                 <p className="text-xs text-slate-400 mb-4 leading-relaxed">
-                  Provide your published deployment web app URL from Google Sheet Apps Script below. Shared globally so anyone checked out will route straight to your sheet.
+                  Provide your published deployment web app URL from Google Sheet Apps Script below. The system will dispatch checkout orders here instantly.
                 </p>
 
                 <input
                   type="url"
                   placeholder="https://script.google.com/macros/s/AKfycb.../exec"
                   value={sheetUrl}
-                  onChange={(e) => updateSheetUrlGlobal(e.target.value)}
+                  onChange={(e) => setSheetUrl(e.target.value)}
                   className="w-full bg-slate-900 border border-slate-700/80 focus:border-purple-500 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:ring-1 focus:ring-purple-500 transition"
                 />
                 
                 {sheetUrl ? (
                   <span className="inline-flex items-center gap-1.5 mt-3 text-xs text-emerald-400 font-semibold">
-                    <CheckCircle className="w-3.5 h-3.5" /> Webhook is globally configured
+                    <CheckCircle className="w-3.5 h-3.5" /> Webhook is currently active
                   </span>
                 ) : (
                   <span className="inline-flex items-center gap-1.5 mt-3 text-xs text-amber-400 font-semibold">
-                    <HelpCircle className="w-3.5 h-3.5" /> No sheet webhook configured
+                    <HelpCircle className="w-3.5 h-3.5" /> Waiting for URL configuration
                   </span>
                 )}
               </div>
 
-              {/* 3 Step Tutorial Guide */}
               <div className="space-y-4">
                 <h4 className="text-sm font-bold text-slate-200 flex items-center gap-2">
                   <Info className="w-4 h-4 text-purple-400" />
@@ -1484,13 +1393,12 @@ export default function App() {
                     <span className="font-extrabold text-purple-400 bg-purple-950/40 w-5 h-5 rounded-full flex items-center justify-center text-[10px]">3</span>
                     <div>
                       <strong className="text-slate-200 block mb-0.5">Deploy as Web App</strong>
-                      Click <strong className="text-slate-300">Deploy &gt; New Deployment</strong>. Choose <strong className="text-slate-300">Web App</strong> as type. Change <strong className="text-slate-300">Who has access</strong> to <strong className="text-slate-300">Anyone</strong>, authorize, and paste your generated URL above!
+                      Click <strong className="text-slate-300">Deploy &gt; New Deployment</strong>. Choose <strong className="text-slate-300">Web App</strong> as type. Change <strong className="text-slate-300">Who has access</strong> to <strong className="text-slate-300">Anyone</strong> (this is required for your client store to submit), authorize, and paste your generated URL above!
                     </div>
                   </div>
                 </div>
               </div>
 
-              {/* Apps script copyable box */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Apps Script Code</label>
@@ -1532,7 +1440,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Footer */}
+      {}
       <footer className="bg-slate-950 border-t border-slate-900 py-12 mt-16">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center text-slate-500 text-xs space-y-3">
           <p>
