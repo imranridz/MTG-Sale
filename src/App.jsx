@@ -26,6 +26,17 @@ import {
   WifiOff
 } from 'lucide-react';
 
+// =========================================================================
+// 1. Paste your published Google Apps Script Web App URL below!
+//    This allows all devices and visitors to connect to the same spreadsheet.
+//    Example: 'https://script.google.com/macros/s/AKfycb.../exec'
+const GLOBAL_DEFAULT_SHEET_URL = 'https://script.google.com/macros/s/AKfycbwt2R0y8bw_lXajDaiOukD2exXYYnGCMb1vRyE4XbncUG2w9JQ7DBXkOLG5YR84BI4/exec'; 
+
+// 2. Set your default Admin Passcode here so you can log into settings 
+//    on any device without setting it up from scratch every time!
+const GLOBAL_DEFAULT_PASSCODE = 'bobseth123';
+// =========================================================================
+
 const DEFAULT_CSV_DATA = `Name,Set code,Set name,Collector number,Foil,Rarity,Quantity,ManaBox ID,Scryfall ID,Purchase price,Misprint,Altered,Condition,Language,Purchase price currency,Added
 Darkslick Shores,ONE,Phyrexia: All Will Be One,250,normal,rare,2,78812,bcbda15b-e49a-4445-a0e1-f221aa82c1e8,2.99,false,false,near_mint,en,USD,2025-10-05T14:38:01.559Z
 Quicksilver Fisher,ONE,Phyrexia: All Will Be One,287,foil,common,4,78789,b394cdd1-a632-4b57-8356-4e2d9c9620f7,0.49,false,false,near_mint,en,USD,2025-10-05T14:38:01.559Z
@@ -42,21 +53,18 @@ export default function App() {
   const [copiedScript, setCopiedScript] = useState(false);
   const [isGlobalMode, setIsGlobalMode] = useState(false);
   
-  // Storage settings state
   const [sheetUrl, setSheetUrl] = useState(() => {
-    return localStorage.getItem('mtg_store_sheet_url') || '';
+    return localStorage.getItem('mtg_store_sheet_url') || GLOBAL_DEFAULT_SHEET_URL;
   });
   
-  // Security locks state
   const [storedPasscode, setStoredPasscode] = useState(() => {
-    return localStorage.getItem('mtg_store_owner_passcode') || '';
+    return localStorage.getItem('mtg_store_owner_passcode') || GLOBAL_DEFAULT_PASSCODE;
   });
   const [passcodeAttempt, setPasscodeAttempt] = useState('');
   const [newPasscode, setNewPasscode] = useState('');
   const [isPasscodePromptOpen, setIsPasscodePromptOpen] = useState(false);
   const [isPasscodeSetupOpen, setIsPasscodeSetupOpen] = useState(false);
 
-  // Storefront navigation state
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedRarities, setSelectedRarities] = useState([]);
   const [selectedColors, setSelectedColors] = useState([]);
@@ -164,7 +172,6 @@ export default function App() {
 
   const syncDatabaseWithBackend = async () => {
     if (!sheetUrl) {
-      // Local Mode Fallback
       setIsGlobalMode(false);
       const saved = localStorage.getItem('mtg_store_inventory');
       const loaded = saved ? JSON.parse(saved) : parseCSV(DEFAULT_CSV_DATA);
@@ -175,7 +182,6 @@ export default function App() {
 
     setLoading(true);
     try {
-      // Retrieve inventory dataset globally via doGet
       const response = await fetch(sheetUrl);
       if (response.ok) {
         const globalCards = await response.json();
@@ -226,15 +232,13 @@ export default function App() {
         if (sheetUrl && isGlobalMode) {
           setLoading(true);
           try {
-            // Push dataset globally to Google Sheets via POST action
-            const res = await fetch(sheetUrl, {
+            await fetch(sheetUrl, {
               method: 'POST',
-              mode: 'no-cors', // standard cross-site redirection override
+              mode: 'no-cors',
               headers: { 'Content-Type': 'text/plain' },
               body: JSON.stringify({ action: "upload", cards: parsed })
             });
             showToast('Global Inventory overwrite signal dispatched to Google Sheet!', 'success');
-            // Give script 1.5 seconds to populate rows, then reload
             setTimeout(() => {
               syncDatabaseWithBackend();
             }, 1800);
@@ -245,7 +249,6 @@ export default function App() {
             fetchScryfallDetails(parsed);
           }
         } else {
-          // Standard local fallback update
           setCards(parsed);
           localStorage.setItem('mtg_store_inventory', JSON.stringify(parsed));
           fetchScryfallDetails(parsed);
@@ -382,7 +385,6 @@ export default function App() {
     }, 0);
   }, [cart]);
 
-  // Pricing multiplier thresholds for final RM output
   const cartMultiplier = useMemo(() => {
     if (cartTotalItemsCount >= 10) return 2.0;
     if (cartTotalItemsCount >= 5) return 2.3;
@@ -529,7 +531,6 @@ export default function App() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = ss.getSheetByName("Inventory");
   
-  // Auto-initialize with fallback cards if the sheet is empty or doesn't exist yet
   if (!sheet) {
     sheet = ss.insertSheet("Inventory");
     sheet.appendRow(["Name", "Set code", "Set name", "Collector number", "Foil", "Rarity", "Quantity", "Scryfall ID", "Purchase price"]);
@@ -538,7 +539,7 @@ export default function App() {
     sheet.appendRow(["Phyrexian Mite", "TONE", "Phyrexia: All Will Be One Tokens", "12", "normal", "common", "3", "a0b4b9cc-b0a4-4383-881b-e843e5d8a8c1", "0.35"]);
     sheet.appendRow(["Requiem Monolith", "EOE", "Edge of Eternities", "113", "normal", "rare", "1", "837d710a-652f-4c60-a52d-d786231160a4", "0.49"]);
     sheet.appendRow(["Fracture", "STA", "Strixhaven Mystical Archive", "65", "normal", "rare", "2", "34005b2e-6270-4ac3-9d35-021d916125ee", "0.79"]);
-    sheet.appendRow(["Molten-Core Maestro", "BIG", "The Big Score", "125", "normal", "rare", "1", "326dfe32-3674-4a11-acd8-5ba62371235a", "2.99"]);
+    sheet.appendRow(["Molten-Core Maestro", "BIG", "The Big Score", "125", "normal", "rare", "1", "111697", "326dfe32-3674-4a11-acd8-5ba62371235a", "2.99"]);
   }
   
   var data = sheet.getDataRange().getValues();
@@ -586,7 +587,6 @@ function doPost(e) {
     var data = JSON.parse(jsonString);
     var ss = SpreadsheetApp.getActiveSpreadsheet();
     
-    // Action Type 1: Overwriting full global spreadsheet list
     if (data.action === "upload") {
       var sheet = ss.getSheetByName("Inventory");
       if (sheet) {
@@ -617,7 +617,6 @@ function doPost(e) {
                            .setMimeType(ContentService.MimeType.JSON);
     }
     
-    // Action Type 2: Processing Checkout - reducing quantity and logging logs
     if (data.action === "checkout") {
       var invSheet = ss.getSheetByName("Inventory");
       if (!invSheet) {
@@ -659,7 +658,6 @@ function doPost(e) {
         }
       }
       
-      // Log order to ledger
       var orderSheet = ss.getSheetByName("Orders");
       if (!orderSheet) {
         orderSheet = ss.insertSheet("Orders");
@@ -706,7 +704,6 @@ function doPost(e) {
       return;
     }
 
-    // Prepare locally modified dataset in case we fall back
     const updatedCards = cards.map(card => {
       const cardId = getCardUniqueId(card);
       const cartItem = cart[cardId];
@@ -737,7 +734,6 @@ function doPost(e) {
     setSubmittingOrder(true);
 
     if (!sheetUrl || !isGlobalMode) {
-      // Offline fallback deduction execution
       setTimeout(() => {
         setSubmittingOrder(false);
         setOrderSubmitted(true);
@@ -762,7 +758,6 @@ function doPost(e) {
       setCart({});
       showToast('Order completed! Global quantities deducted from Google Sheet!', 'success');
       
-      // Pull fresh global records to stay in sync
       setTimeout(() => {
         syncDatabaseWithBackend();
       }, 1800);
@@ -794,14 +789,13 @@ function doPost(e) {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-gradient-to-br from-rose-500 to-purple-600 rounded-xl text-white shadow-md">
-              <Sparkles className="w-6 h-6 animate-pulse" />
+              <Sparkles className="w-6 h-6" />
             </div>
             <div>
               <div className="flex items-center gap-2">
                 <h1 className="text-xl font-bold tracking-tight bg-gradient-to-r from-white via-slate-200 to-rose-400 bg-clip-text text-transparent">
                   Quitting Sale
                 </h1>
-                {/* Global Status Indicator Tag */}
                 {isGlobalMode ? (
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-extrabold bg-emerald-950/80 text-emerald-400 border border-emerald-800 animate-pulse">
                     <Wifi className="w-2.5 h-2.5" /> GLOBAL LIVE
@@ -1166,7 +1160,7 @@ function doPost(e) {
                           </div>
 
                           {isSoldOut ? (
-                            <button disabled className="px-3 py-1.5 bg-slate-950 text-slate-650 rounded-lg text-xs font-bold cursor-not-allowed border border-slate-800">
+                            <button disabled className="px-3 py-1.5 bg-slate-950 text-slate-655 rounded-lg text-xs font-bold cursor-not-allowed border border-slate-800">
                               SOLD OUT
                             </button>
                           ) : availableQty > 0 ? (
@@ -1401,7 +1395,7 @@ function doPost(e) {
         </div>
       )}
 
-      {/* Admin Passcode Modals */}
+      {/* Admin Passcode Setup Modal */}
       {isPasscodeSetupOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div onClick={() => setIsPasscodeSetupOpen(false)} className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm" />
@@ -1442,6 +1436,7 @@ function doPost(e) {
         </div>
       )}
 
+      {/* Admin Password Verification Gate */}
       {isPasscodePromptOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div onClick={() => setIsPasscodePromptOpen(false)} className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm" />
