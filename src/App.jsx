@@ -20,7 +20,10 @@ import {
   Check,
   ArrowUpDown,
   Lock,
-  KeyRound
+  KeyRound,
+  Globe,
+  Wifi,
+  WifiOff
 } from 'lucide-react';
 
 const DEFAULT_CSV_DATA = `Name,Set code,Set name,Collector number,Foil,Rarity,Quantity,ManaBox ID,Scryfall ID,Purchase price,Misprint,Altered,Condition,Language,Purchase price currency,Added
@@ -32,19 +35,19 @@ Fracture,STA,Strixhaven Mystical Archive,65,normal,rare,2,112588,34005b2e-6270-4
 Molten-Core Maestro,BIG,The Big Score,125,normal,rare,1,111697,326dfe32-3674-4a11-acd8-5ba62371235a,2.99,false,false,near_mint,en,USD,2026-05-01T12:42:00.924Z`;
 
 export default function App() {
-  const [cards, setCards] = useState(() => {
-    const saved = localStorage.getItem('mtg_store_inventory');
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [cards, setCards] = useState([]);
   const [scryfallData, setScryfallData] = useState({});
   const [loading, setLoading] = useState(false);
   const [cart, setCart] = useState({});
   const [copiedScript, setCopiedScript] = useState(false);
+  const [isGlobalMode, setIsGlobalMode] = useState(false);
   
+  // Storage settings state
   const [sheetUrl, setSheetUrl] = useState(() => {
     return localStorage.getItem('mtg_store_sheet_url') || '';
   });
   
+  // Security locks state
   const [storedPasscode, setStoredPasscode] = useState(() => {
     return localStorage.getItem('mtg_store_owner_passcode') || '';
   });
@@ -53,6 +56,7 @@ export default function App() {
   const [isPasscodePromptOpen, setIsPasscodePromptOpen] = useState(false);
   const [isPasscodeSetupOpen, setIsPasscodeSetupOpen] = useState(false);
 
+  // Storefront navigation state
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedRarities, setSelectedRarities] = useState([]);
   const [selectedColors, setSelectedColors] = useState([]);
@@ -158,37 +162,95 @@ export default function App() {
     }, 4500);
   };
 
-  useEffect(() => {
-    if (cards.length === 0) {
-      const defaultParsed = parseCSV(DEFAULT_CSV_DATA);
-      setCards(defaultParsed);
-      fetchScryfallDetails(defaultParsed);
-    } else {
-      fetchScryfallDetails(cards);
+  const syncDatabaseWithBackend = async () => {
+    if (!sheetUrl) {
+      // Local Mode Fallback
+      setIsGlobalMode(false);
+      const saved = localStorage.getItem('mtg_store_inventory');
+      const loaded = saved ? JSON.parse(saved) : parseCSV(DEFAULT_CSV_DATA);
+      setCards(loaded);
+      fetchScryfallDetails(loaded);
+      return;
     }
-  }, []);
+
+    setLoading(true);
+    try {
+      // Retrieve inventory dataset globally via doGet
+      const response = await fetch(sheetUrl);
+      if (response.ok) {
+        const globalCards = await response.json();
+        if (Array.isArray(globalCards)) {
+          setCards(globalCards);
+          setIsGlobalMode(true);
+          fetchScryfallDetails(globalCards);
+          localStorage.setItem('mtg_store_inventory', JSON.stringify(globalCards));
+        } else {
+          throw new Error("Invalid format returned from sheet web app.");
+        }
+      } else {
+        throw new Error("Unable to connect to Sheets server");
+      }
+    } catch (err) {
+      console.warn("Could not sync globally, falling back to local cache:", err);
+      setIsGlobalMode(false);
+      const saved = localStorage.getItem('mtg_store_inventory');
+      const loaded = saved ? JSON.parse(saved) : parseCSV(DEFAULT_CSV_DATA);
+      setCards(loaded);
+      fetchScryfallDetails(loaded);
+      showToast('Offline Mode: Operating from local device memory.', 'warning');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    localStorage.setItem('mtg_store_inventory', JSON.stringify(cards));
-  }, [cards]);
+    syncDatabaseWithBackend();
+  }, [sheetUrl]);
 
   useEffect(() => {
     localStorage.setItem('mtg_store_sheet_url', sheetUrl);
   }, [sheetUrl]);
 
-  const handleFileUpload = (e) => {
+  const handleFileUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       const text = event.target.result;
       const parsed = parseCSV(text);
+      
       if (parsed.length > 0) {
-        setCards(parsed);
         setCart({});
-        fetchScryfallDetails(parsed);
-        showToast(`Successfully uploaded ${parsed.length} cards to inventory!`, 'success');
+        
+        if (sheetUrl && isGlobalMode) {
+          setLoading(true);
+          try {
+            // Push dataset globally to Google Sheets via POST action
+            const res = await fetch(sheetUrl, {
+              method: 'POST',
+              mode: 'no-cors', // standard cross-site redirection override
+              headers: { 'Content-Type': 'text/plain' },
+              body: JSON.stringify({ action: "upload", cards: parsed })
+            });
+            showToast('Global Inventory overwrite signal dispatched to Google Sheet!', 'success');
+            // Give script 1.5 seconds to populate rows, then reload
+            setTimeout(() => {
+              syncDatabaseWithBackend();
+            }, 1800);
+          } catch (err) {
+            showToast('Could not save online. Inventory updated locally.', 'warning');
+            setCards(parsed);
+            localStorage.setItem('mtg_store_inventory', JSON.stringify(parsed));
+            fetchScryfallDetails(parsed);
+          }
+        } else {
+          // Standard local fallback update
+          setCards(parsed);
+          localStorage.setItem('mtg_store_inventory', JSON.stringify(parsed));
+          fetchScryfallDetails(parsed);
+          showToast(`Successfully uploaded ${parsed.length} cards locally. Configure your Google Sheets database to sync globally!`, 'info');
+        }
       } else {
         showToast('No valid MTG card rows found in the CSV file.', 'error');
       }
@@ -199,9 +261,6 @@ export default function App() {
   const fetchScryfallDetails = async (cardList) => {
     if (!cardList || cardList.length === 0) return;
 
-    setLoading(true);
-    const updatedDetails = { ...scryfallData };
-    
     const identifiers = cardList.map(card => {
       if (card.scryfallid && card.scryfallid.trim() !== '') {
         return { id: card.scryfallid };
@@ -211,10 +270,7 @@ export default function App() {
       return null;
     }).filter(Boolean);
 
-    if (identifiers.length === 0) {
-      setLoading(false);
-      return;
-    }
+    if (identifiers.length === 0) return;
 
     const batchSize = 75;
     const batches = [];
@@ -222,13 +278,13 @@ export default function App() {
       batches.push(identifiers.slice(i, i + batchSize));
     }
 
+    const updatedDetails = { ...scryfallData };
+
     try {
       for (const batch of batches) {
         const response = await fetch('https://api.scryfall.com/cards/collection', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ identifiers: batch })
         });
 
@@ -255,23 +311,17 @@ export default function App() {
                   usd_price: scryCard.prices?.usd || scryCard.prices?.usd_foil || '—'
                 };
 
-                if (scryCard.id) {
-                  updatedDetails[scryCard.id] = cardDetail;
-                }
+                if (scryCard.id) updatedDetails[scryCard.id] = cardDetail;
                 const fallbackKey = `${scryCard.name?.toLowerCase()}-${scryCard.set?.toLowerCase()}`;
                 updatedDetails[fallbackKey] = cardDetail;
               }
             });
           }
         }
-        await new Promise(resolve => setTimeout(resolve, 100));
       }
       setScryfallData(updatedDetails);
     } catch (err) {
       console.error('Error contacting Scryfall API:', err);
-      showToast('Some card images could not load from Scryfall.', 'warning');
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -332,6 +382,7 @@ export default function App() {
     }, 0);
   }, [cart]);
 
+  // Pricing multiplier thresholds for final RM output
   const cartMultiplier = useMemo(() => {
     if (cartTotalItemsCount >= 10) return 2.0;
     if (cartTotalItemsCount >= 5) return 2.3;
@@ -474,26 +525,162 @@ export default function App() {
     }
   };
 
-  const googleAppsScriptCode = `function doPost(e) {
+  const googleAppsScriptCode = `function doGet(e) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName("Inventory");
+  
+  // Auto-initialize with fallback cards if the sheet is empty or doesn't exist yet
+  if (!sheet) {
+    sheet = ss.insertSheet("Inventory");
+    sheet.appendRow(["Name", "Set code", "Set name", "Collector number", "Foil", "Rarity", "Quantity", "Scryfall ID", "Purchase price"]);
+    sheet.appendRow(["Darkslick Shores", "ONE", "Phyrexia: All Will Be One", "250", "normal", "rare", "2", "bcbda15b-e49a-4445-a0e1-f221aa82c1e8", "2.99"]);
+    sheet.appendRow(["Quicksilver Fisher", "ONE", "Phyrexia: All Will Be One", "287", "foil", "common", "4", "b394cdd1-a632-4b57-8356-4e2d9c9620f7", "0.49"]);
+    sheet.appendRow(["Phyrexian Mite", "TONE", "Phyrexia: All Will Be One Tokens", "12", "normal", "common", "3", "a0b4b9cc-b0a4-4383-881b-e843e5d8a8c1", "0.35"]);
+    sheet.appendRow(["Requiem Monolith", "EOE", "Edge of Eternities", "113", "normal", "rare", "1", "837d710a-652f-4c60-a52d-d786231160a4", "0.49"]);
+    sheet.appendRow(["Fracture", "STA", "Strixhaven Mystical Archive", "65", "normal", "rare", "2", "34005b2e-6270-4ac3-9d35-021d916125ee", "0.79"]);
+    sheet.appendRow(["Molten-Core Maestro", "BIG", "The Big Score", "125", "normal", "rare", "1", "326dfe32-3674-4a11-acd8-5ba62371235a", "2.99"]);
+  }
+  
+  var data = sheet.getDataRange().getValues();
+  var headers = data[0].map(function(h) { return h.toString().toLowerCase().trim().replace(/[\\s_-]+/g, ''); });
+  
+  var cards = [];
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    var card = { rowId: "card-row-" + i };
+    for (var j = 0; j < headers.length; j++) {
+      var val = row[j];
+      var header = headers[j];
+      if (header === 'quantity') {
+        card.quantity = parseInt(val) || 0;
+      } else if (header === 'purchaseprice') {
+        card.purchaseprice = parseFloat(val) || 0;
+      } else if (header === 'set' || header === 'setcode') {
+        card.setcode = val.toString();
+      } else if (header === 'scryfallid') {
+        card.scryfallid = val.toString();
+      } else if (header === 'rarity') {
+        card.rarity = val.toString();
+      } else if (header === 'foil') {
+        card.foil = val.toString();
+      } else if (header === 'name') {
+        card.name = val.toString();
+      } else if (header === 'collectornumber' || header === 'collectornum') {
+        card.collectornumber = val.toString();
+      } else if (header === 'setname') {
+        card.setname = val.toString();
+      } else {
+        card[header] = val;
+      }
+    }
+    cards.push(card);
+  }
+  
+  return ContentService.createTextOutput(JSON.stringify(cards))
+                       .setMimeType(ContentService.MimeType.JSON);
+}
+
+function doPost(e) {
   try {
     var jsonString = e.postData.contents;
     var data = JSON.parse(jsonString);
-    var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
-    if (sheet.getLastRow() === 0) {
-      sheet.appendRow(["Timestamp", "Customer Name", "Phone Number", "Total Value", "Card Orders"]);
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    
+    // Action Type 1: Overwriting full global spreadsheet list
+    if (data.action === "upload") {
+      var sheet = ss.getSheetByName("Inventory");
+      if (sheet) {
+        ss.deleteSheet(sheet);
+      }
+      sheet = ss.insertSheet("Inventory");
+      
+      var cards = data.cards;
+      if (cards.length > 0) {
+        var headers = ["Name", "Set code", "Set name", "Collector number", "Foil", "Rarity", "Quantity", "Scryfall ID", "Purchase price"];
+        sheet.appendRow(headers);
+        for (var i = 0; i < cards.length; i++) {
+          var c = cards[i];
+          sheet.appendRow([
+            c.name || "",
+            c.setcode || "",
+            c.setname || "",
+            c.collectornumber || "",
+            c.foil || "",
+            c.rarity || "",
+            c.quantity !== undefined ? c.quantity : 1,
+            c.scryfallid || "",
+            c.purchaseprice !== undefined ? c.purchaseprice : 0
+          ]);
+        }
+      }
+      return ContentService.createTextOutput(JSON.stringify({ "status": "success", "message": "Global inventory updated!" }))
+                           .setMimeType(ContentService.MimeType.JSON);
     }
-    var ordersSummary = data.items.map(function(item) {
-      return item.name + " (" + item.set + " #" + item.collectorNumber + ") [" + item.foil + "] x" + item.quantity;
-    }).join(", ");
-    sheet.appendRow([
-      new Date(),
-      data.buyerName,
-      data.buyerPhone,
-      "$" + data.totalValue.toFixed(2),
-      ordersSummary
-    ]);
-    return ContentService.createTextOutput(JSON.stringify({ "status": "success", "message": "Order logged successfully!" }))
-                         .setMimeType(ContentService.MimeType.JSON);
+    
+    // Action Type 2: Processing Checkout - reducing quantity and logging logs
+    if (data.action === "checkout") {
+      var invSheet = ss.getSheetByName("Inventory");
+      if (!invSheet) {
+        return ContentService.createTextOutput(JSON.stringify({ "status": "error", "message": "Inventory sheet missing." }))
+                             .setMimeType(ContentService.MimeType.JSON);
+      }
+      
+      var invData = invSheet.getDataRange().getValues();
+      var nameCol = -1, setCol = -1, numCol = -1, qtyCol = -1;
+      var headers = invData[0].map(function(h) { return h.toString().toLowerCase().trim().replace(/[\\s_-]+/g, ''); });
+      
+      for (var j = 0; j < headers.length; j++) {
+        if (headers[j] === 'name') nameCol = j;
+        if (headers[j] === 'setcode' || headers[j] === 'set') setCol = j;
+        if (headers[j] === 'collectornumber' || headers[j] === 'collectornum') numCol = j;
+        if (headers[j] === 'quantity') qtyCol = j;
+      }
+      
+      var items = data.items;
+      for (var i = 0; i < items.length; i++) {
+        var item = items[i];
+        var orderedQty = parseInt(item.quantity) || 0;
+        
+        for (var r = 1; r < invData.length; r++) {
+          var sName = invData[r][nameCol] ? invData[r][nameCol].toString().trim().toLowerCase() : "";
+          var sSet = invData[r][setCol] ? invData[r][setCol].toString().trim().toLowerCase() : "";
+          var sNum = invData[r][numCol] ? invData[r][numCol].toString().trim().toLowerCase() : "";
+          
+          var iName = item.name ? item.name.toString().trim().toLowerCase() : "";
+          var iSet = item.set ? item.set.toString().trim().toLowerCase() : "";
+          var iNum = item.collectorNumber ? item.collectorNumber.toString().trim().toLowerCase() : "";
+          
+          if (sName === iName && sSet === iSet && sNum === iNum) {
+            var currentQty = parseInt(invData[r][qtyCol]) || 0;
+            var nextQty = Math.max(0, currentQty - orderedQty);
+            invSheet.getRange(r + 1, qtyCol + 1).setValue(nextQty);
+            break;
+          }
+        }
+      }
+      
+      // Log order to ledger
+      var orderSheet = ss.getSheetByName("Orders");
+      if (!orderSheet) {
+        orderSheet = ss.insertSheet("Orders");
+        orderSheet.appendRow(["Timestamp", "Customer Name", "Phone Number", "Total Value", "Card Orders"]);
+      }
+      
+      var ordersSummary = items.map(function(item) {
+        return item.name + " (" + item.set + " #" + item.collectorNumber + ") x" + item.quantity;
+      }).join(", ");
+      
+      orderSheet.appendRow([
+        new Date(),
+        data.buyerName,
+        data.buyerPhone,
+        data.totalValue.toFixed(2) + " RM",
+        ordersSummary
+      ]);
+      
+      return ContentService.createTextOutput(JSON.stringify({ "status": "success", "message": "Order completed!" }))
+                           .setMimeType(ContentService.MimeType.JSON);
+    }
   } catch (error) {
     return ContentService.createTextOutput(JSON.stringify({ "status": "error", "message": error.toString() }))
                          .setMimeType(ContentService.MimeType.JSON);
@@ -504,7 +691,7 @@ export default function App() {
     navigator.clipboard.writeText(googleAppsScriptCode);
     setCopiedScript(true);
     setTimeout(() => setCopiedScript(false), 3000);
-    showToast('Apps Script code copied to clipboard!', 'success');
+    showToast('Dual-Action Apps Script code copied to clipboard!', 'success');
   };
 
   const handleCheckout = async (e) => {
@@ -519,6 +706,7 @@ export default function App() {
       return;
     }
 
+    // Prepare locally modified dataset in case we fall back
     const updatedCards = cards.map(card => {
       const cardId = getCardUniqueId(card);
       const cartItem = cart[cardId];
@@ -530,10 +718,8 @@ export default function App() {
       return card;
     });
 
-    setCards(updatedCards);
-    localStorage.setItem('mtg_store_inventory', JSON.stringify(updatedCards));
-
     const payload = {
+      action: "checkout",
       buyerName,
       buyerPhone,
       totalValue: finalTotalRM,
@@ -550,12 +736,15 @@ export default function App() {
 
     setSubmittingOrder(true);
 
-    if (!sheetUrl) {
+    if (!sheetUrl || !isGlobalMode) {
+      // Offline fallback deduction execution
       setTimeout(() => {
         setSubmittingOrder(false);
         setOrderSubmitted(true);
+        setCards(updatedCards);
         setCart({});
-        showToast('Demo checkout successful! No Google Sheet Webhook URL was configured, so this was simulated.', 'info');
+        localStorage.setItem('mtg_store_inventory', JSON.stringify(updatedCards));
+        showToast('Demo checkout successful! Data updated inside this local browser.', 'info');
       }, 1500);
       return;
     }
@@ -564,20 +753,23 @@ export default function App() {
       await fetch(sheetUrl, {
         method: 'POST',
         mode: 'no-cors',
-        headers: {
-          'Content-Type': 'text/plain'
-        },
+        headers: { 'Content-Type': 'text/plain' },
         body: JSON.stringify(payload)
       });
 
       setSubmittingOrder(false);
       setOrderSubmitted(true);
       setCart({});
-      showToast('Order submitted successfully directly to your Google Sheet!', 'success');
+      showToast('Order completed! Global quantities deducted from Google Sheet!', 'success');
+      
+      // Pull fresh global records to stay in sync
+      setTimeout(() => {
+        syncDatabaseWithBackend();
+      }, 1800);
     } catch (error) {
       console.error(error);
       setSubmittingOrder(false);
-      showToast('Error communicating with Google Sheets. Check your App URL configuration.', 'error');
+      showToast('Error communicating with Google Sheets. Local data maintained.', 'error');
     }
   };
 
@@ -597,7 +789,7 @@ export default function App() {
         </div>
       )}
 
-      {}
+      {/* Header Bar */}
       <header className="sticky top-0 z-40 bg-slate-900/95 backdrop-blur-md border-b border-slate-800 shadow-lg">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -605,10 +797,22 @@ export default function App() {
               <Sparkles className="w-6 h-6 animate-pulse" />
             </div>
             <div>
-              <h1 className="text-xl font-bold tracking-tight bg-gradient-to-r from-white via-slate-200 to-rose-400 bg-clip-text text-transparent">
-                Quitting Sale
-              </h1>
-              <p className="text-xs text-slate-400">Everything for sale</p>
+              <div className="flex items-center gap-2">
+                <h1 className="text-xl font-bold tracking-tight bg-gradient-to-r from-white via-slate-200 to-rose-400 bg-clip-text text-transparent">
+                  Quitting Sale
+                </h1>
+                {/* Global Status Indicator Tag */}
+                {isGlobalMode ? (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-extrabold bg-emerald-950/80 text-emerald-400 border border-emerald-800 animate-pulse">
+                    <Wifi className="w-2.5 h-2.5" /> GLOBAL LIVE
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-extrabold bg-amber-950/80 text-amber-400 border border-amber-800">
+                    <WifiOff className="w-2.5 h-2.5" /> LOCAL DEMO
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-slate-400">Collaborative Cross-Device Storefront</p>
             </div>
           </div>
 
@@ -635,14 +839,14 @@ export default function App() {
         </div>
       </header>
 
-      {}
+      {/* Hero Banner Section */}
       <section className="relative overflow-hidden bg-slate-900 py-12 border-b border-slate-800">
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,rgba(244,63,94,0.1),transparent)]"></div>
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative z-10">
           <div className="grid md:grid-cols-2 gap-8 items-center">
             <div>
               <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-rose-950/50 text-rose-400 text-xs font-semibold rounded-full border border-rose-900/60 mb-4">
-                <Sparkles className="w-3.5 h-3.5" /> Buyer &amp; Seller Platform
+                <Globe className="w-3.5 h-3.5" /> Centralized Ledger Database Enabled
               </span>
               <h2 className="text-3xl md:text-4xl font-extrabold tracking-tight text-white mb-3">
                 Browse My Magic Card Inventory
@@ -663,20 +867,20 @@ export default function App() {
             <div className="bg-slate-950/60 p-6 rounded-2xl border border-slate-800/80 shadow-2xl relative">
               <h3 className="text-sm font-bold text-slate-300 mb-3 flex items-center gap-2">
                 <Info className="w-4 h-4 text-rose-400" />
-                How to Purchase
+                Cross-Device Purchase Instructions
               </h3>
               <ol className="space-y-3 text-sm text-slate-400">
                 <li className="flex gap-2">
                   <span className="flex-none font-bold text-rose-400 bg-rose-950/40 w-5 h-5 rounded-full flex items-center justify-center text-xs">1</span>
-                  <span>Use filters or search bar to track down specific rarities and colors.</span>
+                  <span>Select filters to inspect color profiles, card versions, and foil rates.</span>
                 </li>
                 <li className="flex gap-2">
                   <span className="flex-none font-bold text-rose-400 bg-rose-950/40 w-5 h-5 rounded-full flex items-center justify-center text-xs">2</span>
-                  <span>Click the cards you desire to add them to your cart. Sold items are grayed out.</span>
+                  <span>Once selected, cards are booked into your cart. Checked-out items sync globally.</span>
                 </li>
                 <li className="flex gap-2">
                   <span className="flex-none font-bold text-rose-400 bg-rose-950/40 w-5 h-5 rounded-full flex items-center justify-center text-xs">3</span>
-                  <span>Open your cart, type in your delivery info, and checkout.</span>
+                  <span>Complete checkout. Stock counters will update globally on all other browsers.</span>
                 </li>
               </ol>
             </div>
@@ -684,7 +888,7 @@ export default function App() {
         </div>
       </section>
 
-      {}
+      {/* Main Grid & Filters Content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
         <div className="lg:flex lg:gap-8">
           
@@ -797,7 +1001,7 @@ export default function App() {
             </div>
           </aside>
 
-          {}
+          {/* Card Tiles Section */}
           <div className="flex-1">
             
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 pb-4 border-b border-slate-900">
@@ -994,7 +1198,7 @@ export default function App() {
         </div>
       </main>
 
-      {}
+      {/* Cart Drawer */}
       {isCartOpen && (
         <div className="fixed inset-0 z-50 overflow-hidden">
           <div 
@@ -1027,10 +1231,13 @@ export default function App() {
                       </div>
                       <h4 className="text-xl font-bold text-white mb-2">Order Submitted!</h4>
                       <p className="text-slate-400 text-sm max-w-xs mx-auto mb-6">
-                        Thank you! Your selections have been saved. If you connected a Google Sheet, your details are logged in the active ledger.
+                        Thank you! Your global checkout order has been logged in the active database. Current stock is updated.
                       </p>
                       <button
-                        onClick={() => setOrderSubmitted(false)}
+                        onClick={() => {
+                          setOrderSubmitted(false);
+                          syncDatabaseWithBackend();
+                        }}
                         className="px-6 py-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-sm font-semibold transition"
                       >
                         Keep Browsing
@@ -1194,7 +1401,7 @@ export default function App() {
         </div>
       )}
 
-      {}
+      {/* Admin Passcode Modals */}
       {isPasscodeSetupOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div onClick={() => setIsPasscodeSetupOpen(false)} className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm" />
@@ -1279,7 +1486,7 @@ export default function App() {
         </div>
       )}
 
-      {}
+      {/* Configuration & Setup Guide (Settings Modal) */}
       {isSettingsOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div 
@@ -1301,8 +1508,8 @@ export default function App() {
                   <Settings className="w-6 h-6" />
                 </div>
                 <div>
-                  <h3 className="font-extrabold text-xl text-white">Storeowner Settings</h3>
-                  <p className="text-xs text-slate-400">Configure your target spreadsheet to save buyer details</p>
+                  <h3 className="font-extrabold text-xl text-white">Global Database Setup</h3>
+                  <p className="text-xs text-slate-400">Sync pricing, stock availability, and uploads across browsers</p>
                 </div>
               </div>
               <button
@@ -1315,36 +1522,12 @@ export default function App() {
             </div>
 
             <div className="space-y-6">
-              <div className="bg-slate-950 p-5 rounded-2xl border border-slate-800">
-                <h4 className="text-sm font-bold text-slate-200 mb-1 flex items-center gap-2">
-                  <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
-                  Inventory Database
-                </h4>
-                <p className="text-xs text-slate-400 mb-4 leading-relaxed">
-                  Upload a standard ManaBox, Scryfall, or custom formatted MTG card lists in `.csv` format to update stock details, quantities, and pricing.
-                </p>
-                
-                <div className="flex items-center gap-3">
-                  <label className="flex items-center gap-2 px-5 py-3 bg-slate-900 hover:bg-slate-850 text-slate-200 text-xs font-semibold rounded-xl cursor-pointer transition border border-slate-800/80">
-                    <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
-                    <span>Upload New CSV File</span>
-                    <input
-                      type="file"
-                      accept=".csv"
-                      onChange={handleFileUpload}
-                      className="hidden"
-                    />
-                  </label>
-                  <span className="text-xs text-slate-500">
-                    Currently tracking <strong className="text-slate-300">{cards.length}</strong> card items.
-                  </span>
-                </div>
-              </div>
-
+              
+              {/* Webhook Configuration Input */}
               <div className="bg-slate-950 p-5 rounded-2xl border border-slate-800">
                 <h4 className="text-sm font-bold text-slate-200 mb-2">Google Apps Script Web App URL</h4>
                 <p className="text-xs text-slate-400 mb-4 leading-relaxed">
-                  Provide your published deployment web app URL from Google Sheet Apps Script below. The system will dispatch checkout orders here instantly.
+                  Provide your published deployment web app URL from Google Sheet Apps Script below. Once saved, card inventory is retrieved and modified live on Google Sheets.
                 </p>
 
                 <input
@@ -1355,28 +1538,58 @@ export default function App() {
                   className="w-full bg-slate-900 border border-slate-700/80 focus:border-purple-500 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:ring-1 focus:ring-purple-500 transition"
                 />
                 
-                {sheetUrl ? (
+                {isGlobalMode ? (
                   <span className="inline-flex items-center gap-1.5 mt-3 text-xs text-emerald-400 font-semibold">
-                    <CheckCircle className="w-3.5 h-3.5" /> Webhook is currently active
+                    <CheckCircle className="w-3.5 h-3.5" /> Database synced across all devices!
                   </span>
                 ) : (
                   <span className="inline-flex items-center gap-1.5 mt-3 text-xs text-amber-400 font-semibold">
-                    <HelpCircle className="w-3.5 h-3.5" /> Waiting for URL configuration
+                    <HelpCircle className="w-3.5 h-3.5" /> Operating in device-isolated local mode
                   </span>
                 )}
               </div>
 
+              {/* CSV Upload */}
+              <div className="bg-slate-950 p-5 rounded-2xl border border-slate-800">
+                <h4 className="text-sm font-bold text-slate-200 mb-1 flex items-center gap-2">
+                  <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
+                  Publish Inventory Database
+                </h4>
+                <p className="text-xs text-slate-400 mb-4 leading-relaxed">
+                  {isGlobalMode 
+                    ? "Upload your custom MTG inventory CSV below. This will overwrite and publish your list globally to all storefront visitors." 
+                    : "Upload custom `.csv` files locally. Connect a Google Web App above to let other users browse your custom items."}
+                </p>
+                
+                <div className="flex items-center gap-3">
+                  <label className="flex items-center gap-2 px-5 py-3 bg-slate-900 hover:bg-slate-850 text-slate-200 text-xs font-semibold rounded-xl cursor-pointer transition border border-slate-800/80">
+                    <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
+                    <span>Upload CSV Database</span>
+                    <input
+                      type="file"
+                      accept=".csv"
+                      onChange={handleFileUpload}
+                      className="hidden"
+                    />
+                  </label>
+                  <span className="text-xs text-slate-500">
+                    Currently tracking <strong className="text-slate-300">{cards.length}</strong> card entries.
+                  </span>
+                </div>
+              </div>
+
+              {/* Setup Guide */}
               <div className="space-y-4">
                 <h4 className="text-sm font-bold text-slate-200 flex items-center gap-2">
                   <Info className="w-4 h-4 text-purple-400" />
-                  Quick setup instructions:
+                  Step-by-step cross-device setup guide:
                 </h4>
 
                 <div className="space-y-3 text-xs text-slate-400 leading-relaxed">
                   <div className="p-3 bg-slate-950/60 rounded-xl border border-slate-800/60 flex gap-3">
                     <span className="font-extrabold text-purple-400 bg-purple-950/40 w-5 h-5 rounded-full flex items-center justify-center text-[10px]">1</span>
                     <div>
-                      <strong className="text-slate-200 block mb-0.5">Create Spreadsheet</strong>
+                      <strong className="text-slate-200 block mb-0.5">Initialize Spreadsheet</strong>
                       Go to <a href="https://sheets.new" target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:underline">sheets.new</a> and create a blank spreadsheet.
                     </div>
                   </div>
@@ -1384,24 +1597,25 @@ export default function App() {
                   <div className="p-3 bg-slate-950/60 rounded-xl border border-slate-800/60 flex gap-3">
                     <span className="font-extrabold text-purple-400 bg-purple-950/40 w-5 h-5 rounded-full flex items-center justify-center text-[10px]">2</span>
                     <div>
-                      <strong className="text-slate-200 block mb-0.5">Open Apps Script</strong>
-                      Click on <strong className="text-slate-300">Extensions &gt; Apps Script</strong> inside Google Sheets, and replace all default editor code with the copied code block below.
+                      <strong className="text-slate-200 block mb-0.5">Copy Code &amp; Deploy</strong>
+                      Click on <strong className="text-slate-300">Extensions &gt; Apps Script</strong>, clear the file, paste the code below, and select <strong className="text-slate-300">Deploy &gt; New Deployment</strong>. Choose <strong className="text-slate-300">Web App</strong>, change Who Has Access to <strong className="text-slate-300">Anyone</strong>, and authorize it.
                     </div>
                   </div>
 
                   <div className="p-3 bg-slate-950/60 rounded-xl border border-slate-800/60 flex gap-3">
                     <span className="font-extrabold text-purple-400 bg-purple-950/40 w-5 h-5 rounded-full flex items-center justify-center text-[10px]">3</span>
                     <div>
-                      <strong className="text-slate-200 block mb-0.5">Deploy as Web App</strong>
-                      Click <strong className="text-slate-300">Deploy &gt; New Deployment</strong>. Choose <strong className="text-slate-300">Web App</strong> as type. Change <strong className="text-slate-300">Who has access</strong> to <strong className="text-slate-300">Anyone</strong> (this is required for your client store to submit), authorize, and paste your generated URL above!
+                      <strong className="text-slate-200 block mb-0.5">Ready for Sync!</strong>
+                      Copy the Web App URL from the deployment modal and paste it in the field above. Your inventory list is now synced globally to everyone!
                     </div>
                   </div>
                 </div>
               </div>
 
+              {/* Apps script copyable box */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
-                  <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Apps Script Code</label>
+                  <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Apps Script Database Code</label>
                   <button
                     type="button"
                     onClick={copyScriptToClipboard}
@@ -1440,7 +1654,7 @@ export default function App() {
         </div>
       )}
 
-      {}
+      {/* Footer */}
       <footer className="bg-slate-950 border-t border-slate-900 py-12 mt-16">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center text-slate-500 text-xs space-y-3">
           <p>
