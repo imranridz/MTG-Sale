@@ -886,27 +886,6 @@ function doPost(e) {
                 Currently showcasing <strong className="text-slate-200">{cards.length}</strong> unique database listings
               </div>
             </div>
-            
-            <div className="bg-slate-950/60 p-6 rounded-2xl border border-slate-800/80 shadow-2xl relative">
-              <h3 className="text-sm font-bold text-slate-300 mb-3 flex items-center gap-2">
-                <Info className="w-4 h-4 text-rose-400" />
-                Spreadsheet Database Features
-              </h3>
-              <ol className="space-y-3 text-sm text-slate-400">
-                <li className="flex gap-2">
-                  <span className="flex-none font-bold text-rose-400 bg-rose-950/40 w-5 h-5 rounded-full flex items-center justify-center text-xs">1</span>
-                  <span>**Real-Time Loading:** Any changes you type in Google Sheets are pulled live.</span>
-                </li>
-                <li className="flex gap-2">
-                  <span className="flex-none font-bold text-rose-400 bg-rose-950/40 w-5 h-5 rounded-full flex items-center justify-center text-xs">2</span>
-                  <span>**Intelligent Background Fetching:** Full metadata (identity, colors) queries in the background.</span>
-                </li>
-                <li className="flex gap-2">
-                  <span className="flex-none font-bold text-rose-400 bg-rose-950/40 w-5 h-5 rounded-full flex items-center justify-center text-xs">3</span>
-                  <span>**Deduction Processing:** Buying items deducts counts straight from Sheet rows.</span>
-                </li>
-              </ol>
-            </div>
           </div>
         </div>
       </section>
