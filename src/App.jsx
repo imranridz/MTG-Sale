@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   ShoppingBag, 
   Trash2, 
@@ -26,16 +26,8 @@ import {
   WifiOff
 } from 'lucide-react';
 
-// =========================================================================
-// 1. Paste your published Google Apps Script Web App URL below!
-//    This allows all devices and visitors to connect to the same spreadsheet.
-//    Example: 'https://script.google.com/macros/s/AKfycb.../exec'
-const GLOBAL_DEFAULT_SHEET_URL = 'https://script.google.com/macros/s/AKfycbwt2R0y8bw_lXajDaiOukD2exXYYnGCMb1vRyE4XbncUG2w9JQ7DBXkOLG5YR84BI4/exec'; 
-
-// 2. Set your default Admin Passcode here so you can log into settings 
-//    on any device without setting it up from scratch every time!
-const GLOBAL_DEFAULT_PASSCODE = 'bobseth123';
-// =========================================================================
+const GLOBAL_DEFAULT_SHEET_URL = ''; 
+const GLOBAL_DEFAULT_PASSCODE = '1234';
 
 const DEFAULT_CSV_DATA = `Name,Set code,Set name,Collector number,Foil,Rarity,Quantity,ManaBox ID,Scryfall ID,Purchase price,Misprint,Altered,Condition,Language,Purchase price currency,Added
 Darkslick Shores,ONE,Phyrexia: All Will Be One,250,normal,rare,2,78812,bcbda15b-e49a-4445-a0e1-f221aa82c1e8,2.99,false,false,near_mint,en,USD,2025-10-05T14:38:01.559Z
@@ -53,6 +45,7 @@ export default function App() {
   const [copiedScript, setCopiedScript] = useState(false);
   const [isGlobalMode, setIsGlobalMode] = useState(false);
   
+  // Storage settings configurations
   const [sheetUrl, setSheetUrl] = useState(() => {
     return localStorage.getItem('mtg_store_sheet_url') || GLOBAL_DEFAULT_SHEET_URL;
   });
@@ -60,11 +53,13 @@ export default function App() {
   const [storedPasscode, setStoredPasscode] = useState(() => {
     return localStorage.getItem('mtg_store_owner_passcode') || GLOBAL_DEFAULT_PASSCODE;
   });
+  
   const [passcodeAttempt, setPasscodeAttempt] = useState('');
   const [newPasscode, setNewPasscode] = useState('');
   const [isPasscodePromptOpen, setIsPasscodePromptOpen] = useState(false);
   const [isPasscodeSetupOpen, setIsPasscodeSetupOpen] = useState(false);
 
+  // Search, Pagination, Filters UI state
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedRarities, setSelectedRarities] = useState([]);
   const [selectedColors, setSelectedColors] = useState([]);
@@ -77,6 +72,12 @@ export default function App() {
   const [orderSubmitted, setOrderSubmitted] = useState(false);
   const [submittingOrder, setSubmittingOrder] = useState(false);
   const [alertMsg, setAlertMsg] = useState(null);
+  
+  // Lazy loading pagination to prevent DOM lag with 2400+ cards
+  const [visibleCount, setVisibleCount] = useState(80);
+
+  // Ref tracking IDs actively being requested to prevent duplicate parallel fetches
+  const fetchingIds = useRef(new Set());
 
   const normalizeHeaderKey = (key) => {
     return key.toLowerCase().trim().replace(/[\s_-]+/g, '');
@@ -104,13 +105,14 @@ export default function App() {
       const parsed = [];
 
       for (let i = 1; i < lines.length; i++) {
-        if (!lines[i].trim()) continue;
+        const line = lines[i].trim();
+        if (!line) continue;
         
         let row = [];
         let inQuotes = false;
         let currentField = '';
         
-        for (let char of lines[i]) {
+        for (let char of line) {
           if (char === '"') {
             inQuotes = !inQuotes;
           } else if (char === ',' && !inQuotes) {
@@ -176,7 +178,6 @@ export default function App() {
       const saved = localStorage.getItem('mtg_store_inventory');
       const loaded = saved ? JSON.parse(saved) : parseCSV(DEFAULT_CSV_DATA);
       setCards(loaded);
-      fetchScryfallDetails(loaded);
       return;
     }
 
@@ -188,7 +189,6 @@ export default function App() {
         if (Array.isArray(globalCards)) {
           setCards(globalCards);
           setIsGlobalMode(true);
-          fetchScryfallDetails(globalCards);
           localStorage.setItem('mtg_store_inventory', JSON.stringify(globalCards));
         } else {
           throw new Error("Invalid format returned from sheet web app.");
@@ -202,7 +202,6 @@ export default function App() {
       const saved = localStorage.getItem('mtg_store_inventory');
       const loaded = saved ? JSON.parse(saved) : parseCSV(DEFAULT_CSV_DATA);
       setCards(loaded);
-      fetchScryfallDetails(loaded);
       showToast('Offline Mode: Operating from local device memory.', 'warning');
     } finally {
       setLoading(false);
@@ -246,12 +245,10 @@ export default function App() {
             showToast('Could not save online. Inventory updated locally.', 'warning');
             setCards(parsed);
             localStorage.setItem('mtg_store_inventory', JSON.stringify(parsed));
-            fetchScryfallDetails(parsed);
           }
         } else {
           setCards(parsed);
           localStorage.setItem('mtg_store_inventory', JSON.stringify(parsed));
-          fetchScryfallDetails(parsed);
           showToast(`Successfully uploaded ${parsed.length} cards locally. Configure your Google Sheets database to sync globally!`, 'info');
         }
       } else {
@@ -264,6 +261,9 @@ export default function App() {
   const fetchScryfallDetails = async (cardList) => {
     if (!cardList || cardList.length === 0) return;
 
+    setLoading(true);
+    const updatedDetails = {};
+
     const identifiers = cardList.map(card => {
       if (card.scryfallid && card.scryfallid.trim() !== '') {
         return { id: card.scryfallid };
@@ -273,15 +273,16 @@ export default function App() {
       return null;
     }).filter(Boolean);
 
-    if (identifiers.length === 0) return;
+    if (identifiers.length === 0) {
+      setLoading(false);
+      return;
+    }
 
     const batchSize = 75;
     const batches = [];
     for (let i = 0; i < identifiers.length; i += batchSize) {
       batches.push(identifiers.slice(i, i + batchSize));
     }
-
-    const updatedDetails = { ...scryfallData };
 
     try {
       for (const batch of batches) {
@@ -321,10 +322,34 @@ export default function App() {
             });
           }
         }
+
+        // Fill in failed lookups with mock fallback data to prevent infinite retries
+        batch.forEach(idObj => {
+          const key = idObj.id || `${idObj.name?.toLowerCase()}-${idObj.set?.toLowerCase()}`;
+          if (!updatedDetails[key]) {
+            updatedDetails[key] = {
+              image: '',
+              colors: [],
+              failed: true
+            };
+          }
+        });
+
+        // Safe throttle gap requested by Scryfall's collection endpoint
+        await new Promise(resolve => setTimeout(resolve, 150));
       }
-      setScryfallData(updatedDetails);
+
+      setScryfallData(prev => ({ ...prev, ...updatedDetails }));
     } catch (err) {
       console.error('Error contacting Scryfall API:', err);
+      // Clean locks on network error so cards can retry loading on visibility changes
+      cardList.forEach(card => {
+        const cardId = getCardUniqueId(card);
+        fetchingIds.current.delete(cardId);
+        if (card.scryfallid) fetchingIds.current.delete(card.scryfallid);
+      });
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -482,6 +507,29 @@ export default function App() {
       return 0;
     });
   }, [cards, scryfallData, searchQuery, selectedRarities, selectedColors, showFoilOnly, sortBy]);
+
+  useEffect(() => {
+    // Determine which of the currently visible cards do not have metadata/image resolved yet
+    const visibleCardsSlice = filteredAndSortedCards.slice(0, visibleCount);
+    
+    const cardsToFetch = visibleCardsSlice.filter(card => {
+      const cardId = getCardUniqueId(card);
+      const hasDetail = scryfallData[cardId] || (card.scryfallid && scryfallData[card.scryfallid]);
+      const isRequesting = fetchingIds.current.has(cardId) || (card.scryfallid && fetchingIds.current.has(card.scryfallid));
+      return !hasDetail && !isRequesting;
+    });
+
+    if (cardsToFetch.length > 0) {
+      // Mark as fetching to avoid multiple duplicate requests
+      cardsToFetch.forEach(card => {
+        const cardId = getCardUniqueId(card);
+        fetchingIds.current.add(cardId);
+        if (card.scryfallid) fetchingIds.current.add(card.scryfallid);
+      });
+
+      fetchScryfallDetails(cardsToFetch);
+    }
+  }, [filteredAndSortedCards, visibleCount, scryfallData]);
 
   const handleSettingsClick = () => {
     if (!storedPasscode) {
@@ -1000,7 +1048,7 @@ function doPost(e) {
             
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 pb-4 border-b border-slate-900">
               <h3 className="text-sm font-semibold text-slate-400">
-                Showing <strong className="text-white">{filteredAndSortedCards.length}</strong> of {cards.length} cards
+                Showing <strong className="text-white">{Math.min(filteredAndSortedCards.length, visibleCount)}</strong> of {filteredAndSortedCards.length} matching cards
               </h3>
               
               <div className="flex items-center gap-2.5">
@@ -1052,139 +1100,159 @@ function doPost(e) {
                 </button>
               </div>
             ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-6">
-                {filteredAndSortedCards.map((card) => {
-                  const details = getCardDetails(card);
-                  const isFoil = isCardFoil(card);
-                  const cardId = getCardUniqueId(card);
-                  const inCartCount = cart[cardId]?.quantity || 0;
-                  const originalQty = parseInt(card.quantity) || 0;
-                  const availableQty = originalQty - inCartCount;
+              <>
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-6">
+                  {filteredAndSortedCards.slice(0, visibleCount).map((card) => {
+                    const details = getCardDetails(card);
+                    const isFoil = isCardFoil(card);
+                    const cardId = getCardUniqueId(card);
+                    const inCartCount = cart[cardId]?.quantity || 0;
+                    const originalQty = parseInt(card.quantity) || 0;
+                    const availableQty = originalQty - inCartCount;
 
-                  const isSoldOut = originalQty <= 0;
+                    const isSoldOut = originalQty <= 0;
 
-                  return (
-                    <div 
-                      key={card.rowId}
-                      onClick={() => !isSoldOut && availableQty > 0 && addToCart(card)}
-                      className={`group relative bg-slate-900 rounded-2xl overflow-hidden border transition-all duration-300 flex flex-col justify-between cursor-pointer ${
-                        isSoldOut 
-                          ? 'border-slate-800/40 opacity-50 cursor-not-allowed select-none' 
-                          : availableQty === 0 
-                            ? 'border-slate-800 opacity-60' 
-                            : 'border-slate-800/80 hover:border-slate-700 hover:shadow-xl hover:shadow-slate-950/50 hover:-translate-y-1'
-                      }`}
-                    >
-                      {isFoil && !isSoldOut && (
-                        <div className="absolute inset-0 pointer-events-none rounded-2xl opacity-15 bg-gradient-to-tr from-pink-500 via-purple-500 to-teal-500 z-10 animate-pulse"></div>
-                      )}
-
-                      <div className="absolute top-2 left-2 z-20 flex gap-1">
-                        {isFoil && (
-                          <span className="inline-flex items-center gap-0.5 px-2 py-0.5 bg-gradient-to-r from-pink-500 to-indigo-600 text-white font-bold text-[9px] uppercase tracking-wider rounded-md shadow-sm">
-                            <Sparkles className="w-2.5 h-2.5" /> Foil
-                          </span>
-                        )}
-                        <span className={`px-2 py-0.5 text-[9px] uppercase tracking-wider font-bold rounded-md text-white shadow-sm ${
-                          card.rarity?.toLowerCase().includes('mythic') ? 'bg-orange-600' :
-                          card.rarity?.toLowerCase().includes('rare') ? 'bg-amber-500' :
-                          card.rarity?.toLowerCase().includes('uncommon') ? 'bg-slate-600' :
-                          'bg-zinc-700'
-                        }`}>
-                          {card.rarity || 'Common'}
-                        </span>
-                      </div>
-
-                      <div className="absolute top-2 right-2 z-20">
-                        {isSoldOut ? (
-                          <span className="px-2 py-0.5 bg-red-950/90 text-red-200 text-xs font-bold rounded-md border border-red-800 shadow-sm">
-                            SOLD OUT
-                          </span>
-                        ) : availableQty > 0 ? (
-                          <span className="px-2 py-0.5 bg-slate-950/80 backdrop-blur-md text-slate-200 text-xs font-semibold rounded-md border border-slate-700">
-                            Qty: {availableQty}
-                          </span>
-                        ) : (
-                          <span className="px-2 py-0.5 bg-amber-950/90 text-amber-200 text-xs font-bold rounded-md border border-amber-800 shadow-sm">
-                            ALL SELECTED
-                          </span>
-                        )}
-                      </div>
-
-                      <div className={`relative aspect-[3/4] bg-slate-950 overflow-hidden flex items-center justify-center ${isSoldOut ? 'grayscale contrast-75' : ''}`}>
-                        {details.image ? (
-                          <img
-                            src={details.image}
-                            alt={card.name || 'MTG Card'}
-                            loading="lazy"
-                            className="w-full h-full object-cover transition duration-300 group-hover:scale-105"
-                          />
-                        ) : (
-                          <div className="flex flex-col items-center gap-2 p-4 text-center">
-                            <div className="w-10 h-10 rounded-full bg-slate-900 flex items-center justify-center animate-pulse">
-                              <Database className="w-5 h-5 text-slate-600" />
-                            </div>
-                            <span className="text-[10px] text-slate-500">Querying Scryfall...</span>
-                          </div>
+                    return (
+                      <div 
+                        key={card.rowId}
+                        onClick={() => !isSoldOut && availableQty > 0 && addToCart(card)}
+                        className={`group relative bg-slate-900 rounded-2xl overflow-hidden border transition-all duration-300 flex flex-col justify-between cursor-pointer ${
+                          isSoldOut 
+                            ? 'border-slate-800/40 opacity-50 cursor-not-allowed select-none' 
+                            : availableQty === 0 
+                              ? 'border-slate-800 opacity-60' 
+                              : 'border-slate-800/80 hover:border-slate-700 hover:shadow-xl hover:shadow-slate-950/50 hover:-translate-y-1'
+                        }`}
+                      >
+                        {isFoil && !isSoldOut && (
+                          <div className="absolute inset-0 pointer-events-none rounded-2xl opacity-15 bg-gradient-to-tr from-pink-500 via-purple-500 to-teal-500 z-10 animate-pulse"></div>
                         )}
 
-                        <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/40 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex flex-col justify-end p-4">
-                          <span className="text-xs font-medium text-slate-300 truncate">
-                            {card.setname || 'Set'}
-                          </span>
-                          <span className="text-[10px] text-slate-400">
-                            Set Code: {card.setcode} • No: {card.collectornumber}
+                        <div className="absolute top-2 left-2 z-20 flex gap-1">
+                          {isFoil && (
+                            <span className="inline-flex items-center gap-0.5 px-2 py-0.5 bg-gradient-to-r from-pink-500 to-indigo-600 text-white font-bold text-[9px] uppercase tracking-wider rounded-md shadow-sm">
+                              <Sparkles className="w-2.5 h-2.5" /> Foil
+                            </span>
+                          )}
+                          <span className={`px-2 py-0.5 text-[9px] uppercase tracking-wider font-bold rounded-md text-white shadow-sm ${
+                            card.rarity?.toLowerCase().includes('mythic') ? 'bg-orange-600' :
+                            card.rarity?.toLowerCase().includes('rare') ? 'bg-amber-500' :
+                            card.rarity?.toLowerCase().includes('uncommon') ? 'bg-slate-600' :
+                            'bg-zinc-700'
+                          }`}>
+                            {card.rarity || 'Common'}
                           </span>
                         </div>
 
-                        {inCartCount > 0 && (
-                          <div className="absolute inset-0 bg-rose-600/20 backdrop-blur-xs flex items-center justify-center z-15">
-                            <div className="bg-rose-600 text-white font-extrabold text-sm px-4 py-2 rounded-xl shadow-lg border border-rose-400">
-                              Selected x{inCartCount}
-                            </div>
-                          </div>
-                        )}
-                      </div>
+                        <div className="absolute top-2 right-2 z-20">
+                          {isSoldOut ? (
+                            <span className="px-2 py-0.5 bg-red-950/90 text-red-200 text-xs font-bold rounded-md border border-red-800 shadow-sm">
+                              SOLD OUT
+                            </span>
+                          ) : availableQty > 0 ? (
+                            <span className="px-2 py-0.5 bg-slate-950/80 backdrop-blur-md text-slate-200 text-xs font-semibold rounded-md border border-slate-700">
+                              Qty: {availableQty}
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 bg-amber-950/90 text-amber-200 text-xs font-bold rounded-md border border-amber-800 shadow-sm">
+                              ALL SELECTED
+                            </span>
+                          )}
+                        </div>
 
-                      <div className="p-4 bg-slate-900 border-t border-slate-800 flex-grow flex flex-col justify-between">
-                        <h4 className={`font-bold text-sm group-hover:text-rose-400 transition truncate ${isSoldOut ? 'text-slate-500 line-through' : 'text-white'}`} title={card.name}>
-                          {card.name}
-                        </h4>
-                        
-                        <div className="mt-3 flex items-center justify-between">
-                          <div>
-                            <span className="text-[11px] text-slate-500 block uppercase font-bold tracking-wider">Store Price</span>
-                            <span className={`text-lg font-extrabold ${isSoldOut ? 'text-slate-600' : 'text-rose-400'}`}>
-                              ${parseFloat(card.purchaseprice || 0).toFixed(2)}
+                        <div className={`relative aspect-[3/4] bg-slate-950 overflow-hidden flex items-center justify-center ${isSoldOut ? 'grayscale contrast-75' : ''}`}>
+                          {details.image ? (
+                            <img
+                              src={details.image}
+                              alt={card.name || 'MTG Card'}
+                              loading="lazy"
+                              className="w-full h-full object-cover transition duration-300 group-hover:scale-105"
+                            />
+                          ) : details.failed ? (
+                            <div className="flex flex-col items-center gap-2 p-4 text-center">
+                              <Database className="w-8 h-8 text-slate-600" />
+                              <span className="text-xs font-bold text-slate-500">{card.name}</span>
+                              <span className="text-[10px] text-slate-600">No Image Available</span>
+                            </div>
+                          ) : (
+                            <div className="flex flex-col items-center gap-2 p-4 text-center">
+                              <div className="w-10 h-10 rounded-full bg-slate-900 flex items-center justify-center animate-pulse">
+                                <Database className="w-5 h-5 text-slate-600" />
+                              </div>
+                              <span className="text-[10px] text-slate-500">Queueing Image...</span>
+                            </div>
+                          )}
+
+                          <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/40 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-200 flex flex-col justify-end p-4">
+                            <span className="text-xs font-medium text-slate-300 truncate">
+                              {card.setname || 'Set'}
+                            </span>
+                            <span className="text-[10px] text-slate-400">
+                              Set Code: {card.setcode} • No: {card.collectornumber}
                             </span>
                           </div>
 
-                          {isSoldOut ? (
-                            <button disabled className="px-3 py-1.5 bg-slate-950 text-slate-655 rounded-lg text-xs font-bold cursor-not-allowed border border-slate-800">
-                              SOLD OUT
-                            </button>
-                          ) : availableQty > 0 ? (
-                            <button 
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                addToCart(card);
-                              }}
-                              className="px-3 py-1.5 bg-slate-800 hover:bg-rose-600 text-slate-200 hover:text-white rounded-lg text-xs font-bold transition duration-200"
-                            >
-                              Select
-                            </button>
-                          ) : (
-                            <button disabled className="px-3 py-1.5 bg-slate-950 text-amber-500 rounded-lg text-xs font-bold cursor-not-allowed border border-slate-800">
-                              Selected
-                            </button>
+                          {inCartCount > 0 && (
+                            <div className="absolute inset-0 bg-rose-600/20 backdrop-blur-sm flex items-center justify-center z-15">
+                              <div className="bg-rose-600 text-white font-extrabold text-sm px-4 py-2 rounded-xl shadow-lg border border-rose-400">
+                                Selected x{inCartCount}
+                              </div>
+                            </div>
                           )}
                         </div>
-                      </div>
 
-                    </div>
-                  );
-                })}
-              </div>
+                        <div className="p-4 bg-slate-900 border-t border-slate-800 flex-grow flex flex-col justify-between">
+                          <h4 className={`font-bold text-sm group-hover:text-rose-400 transition truncate ${isSoldOut ? 'text-slate-500 line-through' : 'text-white'}`} title={card.name}>
+                            {card.name}
+                          </h4>
+                          
+                          <div className="mt-3 flex items-center justify-between">
+                            <div>
+                              <span className="text-[11px] text-slate-500 block uppercase font-bold tracking-wider">Store Price</span>
+                              <span className={`text-lg font-extrabold ${isSoldOut ? 'text-slate-600' : 'text-rose-400'}`}>
+                                ${parseFloat(card.purchaseprice || 0).toFixed(2)}
+                              </span>
+                            </div>
+
+                            {isSoldOut ? (
+                              <button disabled className="px-3 py-1.5 bg-slate-950 text-slate-600 rounded-lg text-xs font-bold cursor-not-allowed border border-slate-800">
+                                SOLD OUT
+                              </button>
+                            ) : availableQty > 0 ? (
+                              <button 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  addToCart(card);
+                                }}
+                                className="px-3 py-1.5 bg-slate-800 hover:bg-rose-600 text-slate-200 hover:text-white rounded-lg text-xs font-bold transition duration-200"
+                              >
+                                Select
+                              </button>
+                            ) : (
+                              <button disabled className="px-3 py-1.5 bg-slate-950 text-amber-500 rounded-lg text-xs font-bold cursor-not-allowed border border-slate-800">
+                                Selected
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Show More Pagination control */}
+                {filteredAndSortedCards.length > visibleCount && (
+                  <div className="mt-12 text-center">
+                    <button
+                      onClick={() => setVisibleCount(prev => prev + 80)}
+                      className="px-8 py-4 bg-slate-900 hover:bg-slate-850 border border-slate-800 hover:border-slate-700 text-slate-200 font-bold text-sm rounded-xl transition duration-200 shadow-md"
+                    >
+                      Show More Cards
+                    </button>
+                  </div>
+                )}
+              </>
             )}
 
           </div>
@@ -1518,7 +1586,6 @@ function doPost(e) {
 
             <div className="space-y-6">
               
-              {/* Webhook Configuration Input */}
               <div className="bg-slate-950 p-5 rounded-2xl border border-slate-800">
                 <h4 className="text-sm font-bold text-slate-200 mb-2">Google Apps Script Web App URL</h4>
                 <p className="text-xs text-slate-400 mb-4 leading-relaxed">
@@ -1544,7 +1611,6 @@ function doPost(e) {
                 )}
               </div>
 
-              {/* CSV Upload */}
               <div className="bg-slate-950 p-5 rounded-2xl border border-slate-800">
                 <h4 className="text-sm font-bold text-slate-200 mb-1 flex items-center gap-2">
                   <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
@@ -1573,7 +1639,6 @@ function doPost(e) {
                 </div>
               </div>
 
-              {/* Setup Guide */}
               <div className="space-y-4">
                 <h4 className="text-sm font-bold text-slate-200 flex items-center gap-2">
                   <Info className="w-4 h-4 text-purple-400" />
@@ -1607,7 +1672,6 @@ function doPost(e) {
                 </div>
               </div>
 
-              {/* Apps script copyable box */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Apps Script Database Code</label>
