@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   ShoppingBag, 
   Trash2, 
@@ -20,7 +20,6 @@ import {
   Check,
   ArrowUpDown,
   Lock,
-  Unlock,
   KeyRound,
   CloudLightning,
   Cloud
@@ -30,7 +29,18 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, doc, setDoc, onSnapshot } from 'firebase/firestore';
 
-const firebaseConfig = JSON.parse(__firebase_config);
+// Safe extraction of Firebase config to prevent ReferenceError during Vercel builds
+const firebaseConfig = typeof __firebase_config !== 'undefined' 
+  ? JSON.parse(__firebase_config) 
+  : {
+      apiKey: "mock-api-key",
+      authDomain: "mock-auth-domain",
+      projectId: "mock-project-id",
+      storageBucket: "mock-storage-bucket",
+      messagingSenderId: "mock-messaging-id",
+      appId: "mock-app-id"
+    };
+
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
@@ -106,7 +116,6 @@ export default function App() {
         const data = docSnap.data();
         if (data.cards) {
           setCards(data.cards);
-          // Fetch Scryfall details if metadata not loaded
           fetchScryfallDetails(data.cards);
         }
         if (data.sheetUrl !== undefined) setSheetUrl(data.sheetUrl);
@@ -255,7 +264,6 @@ export default function App() {
   const fetchScryfallDetails = async (cardList) => {
     if (!cardList || cardList.length === 0) return;
 
-    // Check if we already have most data mapped to avoid repetitive network requests
     const needed = cardList.filter(card => {
       const uid = getCardUniqueId(card);
       return !scryfallData[uid] && !scryfallData[card.scryfallid];
@@ -1232,7 +1240,7 @@ export default function App() {
                           </div>
                           <div className="flex justify-between text-sm font-bold text-slate-200 border-t border-slate-900 pt-2">
                             <span>Final Total</span>
-                            <span className="text-rose-400 text-lg font-extrabold">RM {cartTotal.toFixed(2)}</span>
+                            <span className="text-rose-400 text-lg font-extrabold">{cartTotal.toFixed(2)} RM</span>
                           </div>
                         </div>
 
